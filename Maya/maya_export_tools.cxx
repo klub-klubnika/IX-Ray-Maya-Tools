@@ -32,6 +32,7 @@
 #include <maya/MPointArray.h>
 #include <maya/MSelectionList.h>
 #include <maya/MMatrix.h>
+#include <cctype>
 #include "maya_export_tools.h"
 #include "maya_bone_collision.h"
 #include "xr_object.h"
@@ -51,6 +52,43 @@ std::string getRealName(MFnDependencyNode& n)
 		return name;
 
 	return name.substr(delimPos + 1, std::string::npos);
+}
+
+static std::string texture_path_from_file(const MString& file_path)
+{
+	std::string path = file_path.asChar();
+	std::replace(path.begin(), path.end(), '/', '\\');
+	const size_t slash = path.find_last_of('\\');
+	const size_t dot = path.find_last_of('.');
+	if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) path.resize(dot);
+
+	std::string lowercase = path;
+	std::transform(lowercase.begin(), lowercase.end(), lowercase.begin(), [](unsigned char c) {
+		return char(std::tolower(c));
+	});
+	const std::string marker = "\\textures\\";
+	const size_t root = lowercase.rfind(marker);
+	if (root != std::string::npos) return path.substr(root + marker.size());
+	const std::string relative_root = "textures\\";
+	if (lowercase.rfind(relative_root, 0) == 0) return path.substr(relative_root.size());
+	return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+static std::string normalize_omf_refs(std::string refs)
+{
+	std::string result;
+	result.reserve(refs.size());
+	bool slash = false;
+	for (char c: refs) {
+		if (c == '/' || c == '\\') {
+			if (!slash) result += '\\';
+			slash = true;
+		} else {
+			result += c;
+			slash = false;
+		}
+	}
+	return result;
 }
 
 maya_export_tools::maya_export_tools(const MString& options)
@@ -561,20 +599,7 @@ xr_surface* maya_export_tools::create_surface(const char* surf_name, MFnSet& set
 			MString file_path = dep_fn.findPlug("ftn").asString();
 			if (file_path.numChars() != 0)
 			{
-				int i, j;
-				if ((i = file_path.rindexW('/')) < 0)
-					i = file_path.rindexW('\\');
-				if ((j = file_path.rindexW('.')) < 0)
-					j = file_path.numChars();
-				MString name(file_path.substringW(i + 1, j - 1));
-				if ((i = name.indexW('_')) > 0)
-				{
-					surface->texture() = (name.substringW(0, i - 1) + "\\" + name).asChar();
-				}
-				else
-				{
-					surface->texture() = name.asChar();
-				}
+				surface->texture() = texture_path_from_file(file_path);
 			}
 			else
 			{
@@ -1329,7 +1354,7 @@ MStatus maya_export_tools::parse_options(const MString& options)
 			if (key_value[1] != "2" && key_value[1] != "4") return MS::kInvalidParameter;
 			m_ogf_influences = key_value[1].asInt();
 		}
-		else if (key_value[0] == "ogf_motion_refs") m_ogf_motion_refs = key_value[1].asChar();
+		else if (key_value[0] == "ogf_motion_refs") m_ogf_motion_refs = normalize_omf_refs(key_value[1].asChar());
 	}
 
 	return MS::kSuccess;
