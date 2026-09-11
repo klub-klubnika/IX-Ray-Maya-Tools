@@ -202,67 +202,6 @@ static std::string normalize_omf_refs(std::string refs)
 	return result;
 }
 
-static bool imported_omf_bone_order(const MDagPathArray& joints, const std::vector<std::string>& bone_names,
-	std::vector<unsigned>& order, std::vector<uint32_t>& ids)
-{
-	auto decode = [&bone_names, &order, &ids](const MString& value) {
-		std::string encoded = value.asChar();
-		std::vector<unsigned> result;
-		for (size_t begin = 0; begin < encoded.size();) {
-			const size_t end = encoded.find('\n', begin);
-			const std::string name = encoded.substr(begin, end - begin);
-			if (!name.empty()) {
-				auto found = std::find(bone_names.begin(), bone_names.end(), name);
-				if (found == bone_names.end()) return false;
-				result.push_back(unsigned(found - bone_names.begin()));
-			}
-			if (end == std::string::npos) break;
-			begin = end + 1;
-		}
-		if (result.size() != bone_names.size()) return false;
-		order.swap(result);
-		ids.resize(order.size());
-		for (size_t i = 0; i != ids.size(); ++i) ids[i] = uint32_t(i);
-		return true;
-	};
-	auto decode_ids = [&bone_names, &order, &ids]() {
-		if (!MGlobal::optionVarExists("ixrayLastOmfBoneIds")) return;
-		const std::string encoded = MGlobal::optionVarStringValue("ixrayLastOmfBoneIds").asChar();
-		std::vector<std::pair<std::string, uint32_t>> stored;
-		for (size_t begin = 0; begin < encoded.size();) {
-			const size_t end = encoded.find('\n', begin);
-			const std::string line = encoded.substr(begin, end - begin);
-			const size_t tab = line.find('\t');
-			if (tab != std::string::npos) {
-				try { stored.push_back(std::make_pair(line.substr(0, tab), uint32_t(std::stoul(line.substr(tab + 1))))); }
-				catch (const std::exception&) { return; }
-			}
-			if (end == std::string::npos) break;
-			begin = end + 1;
-		}
-		if (stored.size() != bone_names.size()) return;
-		std::vector<uint32_t> result;
-		for (unsigned index: order) {
-			auto found = std::find_if(stored.begin(), stored.end(), [&bone_names, index](const std::pair<std::string, uint32_t>& item) { return item.first == bone_names[index]; });
-			if (found == stored.end()) return;
-			result.push_back(found->second);
-		}
-		ids.swap(result);
-	};
-	for (unsigned i = 0; i != joints.length(); ++i) {
-		MFnDependencyNode node(joints[i].node());
-		if (!node.hasAttribute("ixrayOmfBoneOrder")) continue;
-		MStatus status;
-		MString value = node.findPlug("ixrayOmfBoneOrder", true, &status).asString(&status);
-		if (!status || value.length() == 0) continue;
-		if (decode(value)) { decode_ids(); return true; }
-	}
-	if (!MGlobal::optionVarExists("ixrayLastOmfBoneOrder")) return false;
-	if (!decode(MGlobal::optionVarStringValue("ixrayLastOmfBoneOrder"))) return false;
-	decode_ids();
-	return true;
-}
-
 maya_export_tools::maya_export_tools(const MString& options)
 {
 	set_default_options();

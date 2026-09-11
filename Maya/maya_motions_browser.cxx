@@ -36,30 +36,6 @@ static MString extract_extension(const MString& path)
 	return dot >= 0 ? path.substring(dot + 1, path.numChars() - 1).toLowerCase() : MString();
 }
 
-static void remember_omf_bone_order(const xr_ogf_v4& omf)
-{
-	if (omf.partitions().empty()) return;
-	const std::vector<std::string>& bones = omf.partitions()[0]->bones();
-	if (bones.empty()) return;
-	MString value;
-	MString ids;
-	for (const std::string& bone: bones) { value += bone.c_str(); value += "\n"; }
-	// IDs are not necessarily equal to the order in the partition.  OMF mergers
-	// retain the IDs from their base file, therefore an exported clip must retain
-	// those IDs too or its raw key blocks will be applied to different bones.
-	const xr_bone_vec& all_bones = omf.bones();
-	for (const std::string& bone: bones) {
-		for (size_t id = 0; id != all_bones.size(); ++id) {
-			if (all_bones[id] && all_bones[id]->name() == bone) {
-				ids += bone.c_str(); ids += "\t"; ids += int(id); ids += "\n";
-				break;
-			}
-		}
-	}
-	MGlobal::setOptionVarValue("ixrayLastOmfBoneOrder", value);
-	MGlobal::setOptionVarValue("ixrayLastOmfBoneIds", ids);
-}
-
 static MStatus cant_open(const MString& path)
 {
 	MGlobal::displayError(MString("xray_re: can't open ") + path);
@@ -282,7 +258,6 @@ MStatus ixrayMotionLoad::doIt(const MArgList& args)
 			delete omf;
 			return cant_open(path);
 		}
-		remember_omf_bone_order(*omf);
 		unsigned index = 0;
 		for (auto* motion : omf->motions())
 		{
