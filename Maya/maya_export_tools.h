@@ -9,6 +9,7 @@
 #include <maya/MStatus.h>
 
 #include "xr_sdk_version.h"
+#include "ogf_export.h"
 
 class MObject;
 class MObjectArray;
@@ -31,6 +32,7 @@ public:
 
 	MStatus			export_object(const char* path, bool selection_only = false);
 	MStatus			export_skl_object(const char* path, bool selection_only = false);
+	MStatus export_ogf(const char* path, bool selection_only = false);
 	MStatus			export_skl(const char* path, bool selection_only = false);
 	MStatus			export_anm(const char* path, bool selection_only = false);
 
@@ -38,7 +40,7 @@ private:
 	MStatus			extract_surfaces(MFnMesh& mesh_fn, std::vector<xray_re::xr_surfmap*>& surfmaps);
 	xray_re::xr_surface*	create_surface(const char* surf_name, MFnSet& set_fn);
 	xray_re::xr_object*	create_object(MObjectArray& mesh_objs);
-	xray_re::xr_object*	create_skl_object(MObject& mesh_obj, MObject& skin_obj);
+	xray_re::xr_object*	create_skl_object(MObject& mesh_obj, MObject& skin_obj, unsigned influence_limit = 0);
 
 	void			commit_surfaces(std::vector<xray_re::xr_surface*>& surfaces);
 
@@ -52,6 +54,10 @@ private:
 	xray_re::sdk_version m_target_sdk;
 	bool m_compressed;
 	bool m_vnormals;
+	ogf_smoothing m_ogf_smoothing;
+	unsigned m_ogf_influences;
+	std::string m_ogf_motion_refs;
+	MStatus m_options_status;
 };
 
 #endif

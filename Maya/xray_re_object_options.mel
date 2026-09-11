@@ -1,6 +1,6 @@
 // IX-Ray Maya file translator options.
 // One file defines the MEL procedures used by both the importers (.object/.ogf)
-// and the exporters (.object); it is embedded into the plugin and executed on load.
+// and the exporters (.object/.ogf); it is embedded into the plugin and executed on load.
 // All widget state is round-tripped through the options string AND stored in
 // optionVar so the last used values survive a Maya restart.
 
@@ -84,6 +84,65 @@ global proc int xray_re_object_import_options(string $parent, string $action, st
 		eval($callback + " \"" + $options + "\"");
 	}
 
+	return 1;
+}
+
+global proc int xray_re_ogf_export_options(string $parent, string $action, string $options, string $callback)
+{
+	string $modes[] = { "normals", "soc", "cscop" };
+	string $labels[] = { "Maya normals (preserve custom normals)", "SDK SoC (smoothing groups)", "SDK CS/CoP (smooth edges)" };
+	int $i;
+	if ($action == "post") {
+		setParent $parent;
+		columnLayout -adj true;
+		text -label "Skeletal OGF v4" -align "left";
+		text -label "Smoothing:" -align "left";
+		radioCollection "ixrayOgfSmoothing";
+		for ($i = 0; $i < 3; ++$i)
+			radioButton -label $labels[$i] ("ixrayOgf_" + $modes[$i]);
+		string $mode = "normals";
+		int $influences = 4;
+		if (`optionVar -exists "ixrayOgfSmoothing"`) $mode = `optionVar -q "ixrayOgfSmoothing"`;
+		if (`optionVar -exists "ixrayOgfInfluences"`) $influences = `optionVar -q "ixrayOgfInfluences"`;
+		string $refs = "";
+		string $params[];
+		tokenize($options, ";", $params);
+		for ($i = 0; $i < size($params); ++$i) {
+			string $kv[];
+			tokenize($params[$i], "=", $kv);
+			if (size($kv) < 2) continue;
+			if ($kv[0] == "ogf_smoothing") $mode = $kv[1];
+			if ($kv[0] == "ogf_influences") $influences = (int)$kv[1];
+			if ($kv[0] == "ogf_motion_refs") $refs = $kv[1];
+		}
+		radioCollection -edit -select "ixrayOgf_normals" "ixrayOgfSmoothing";
+		for ($i = 0; $i < 3; ++$i)
+			if ($mode == $modes[$i]) radioCollection -edit -select ("ixrayOgf_" + $modes[$i]) "ixrayOgfSmoothing";
+		optionMenu -label "Maximum bone influences" "ixrayOgfInfluences";
+		menuItem -label "2 (SoC / CS / CoP)";
+		menuItem -label "4 (CS / CoP / IX-Ray)";
+		optionMenu -edit -select (($influences == 2) ? 1 : 2) "ixrayOgfInfluences";
+		text -label "Keeps strongest weights and normalizes them." -align "left";
+		textFieldGrp -label "OMF references" -text $refs "ixrayOgfMotionRefs";
+		text -label "Paths relative to meshes, without .omf; separate with commas." -align "left";
+		text -label "Empty: skeleton without animations. Motions are not embedded." -align "left";
+	} else if ($action == "query") {
+		string $selected = `radioCollection -q -sl "ixrayOgfSmoothing"`;
+		string $mode = "normals";
+		for ($i = 0; $i < 3; ++$i) if ($selected == ("ixrayOgf_" + $modes[$i])) $mode = $modes[$i];
+		int $influences = (`optionMenu -q -select "ixrayOgfInfluences"` == 1) ? 2 : 4;
+		string $refs = `textFieldGrp -q -text "ixrayOgfMotionRefs"`;
+		// Forward slashes also avoid MEL escape sequences in the callback string.
+		$refs = substituteAllString($refs, "\\", "/");
+		if (`gmatch $refs "*\"*"` || `gmatch $refs "*;*"` || `gmatch $refs "*=*"`) {
+			error "OMF references cannot contain quotes, semicolons or equals signs.";
+			return 0;
+		}
+		optionVar -sv "ixrayOgfSmoothing" $mode;
+		optionVar -iv "ixrayOgfInfluences" $influences;
+		$options = "ogf_smoothing=" + $mode + ";ogf_influences=" + $influences + ";ogf_motion_refs=" + $refs + ";";
+		eval($callback + " \"" + $options + "\"");
+	}
 	return 1;
 }
 

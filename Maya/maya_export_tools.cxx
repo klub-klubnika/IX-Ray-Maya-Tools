@@ -1,4 +1,6 @@
 #define NOMINMAX
+#include <algorithm>
+#include <cmath>
 #include <maya/MTypes.h>
 #if MAYA_API_VERSION >= 20180000 && MAYA_API_VERSION <= 20190200
 #include <MCppCompat.h>
@@ -54,7 +56,7 @@ std::string getRealName(MFnDependencyNode& n)
 maya_export_tools::maya_export_tools(const MString& options)
 {
 	set_default_options();
-	parse_options(options);
+	m_options_status = parse_options(options);
 }
 
 static MStatus extract_bones(MFnSkinCluster& skin_fn, xr_bone_vec& bones)
@@ -359,7 +361,7 @@ static MStatus extract_uvs(MFnMesh& mesh_fn, lw_face_vec& faces,
 }
 
 static MStatus extract_weights(MFnMesh& mesh_fn, MFnSkinCluster& skin_fn,
-		lw_face_vec& faces, lw_vmref_vec& vmrefs, xr_vmap_vec& vmaps)
+		lw_face_vec& faces, lw_vmref_vec& vmrefs, xr_vmap_vec& vmaps, unsigned influence_limit)
 {
 	MStatus status;
 
@@ -367,7 +369,7 @@ static MStatus extract_weights(MFnMesh& mesh_fn, MFnSkinCluster& skin_fn,
 	skin_fn.influenceObjects(joints, &status);
 	CHECK_MSTATUS(status);
 
-	lw_vmref_vec weight_vmrefs(size_t(mesh_fn.numVertices() & INT_MAX));
+	std::vector<std::vector<lw_vmref_entry>> weight_vmrefs(size_t(mesh_fn.numVertices() & INT_MAX));
 	for (unsigned joint_idx = joints.length(); joint_idx != 0;)
 	{
 		MDoubleArray weights;
@@ -404,19 +406,27 @@ static MStatus extract_weights(MFnMesh& mesh_fn, MFnSkinCluster& skin_fn,
 			{
 				int vert_idx = component_fn.element(j, &status);
 				CHECK_MSTATUS(status);
-				uint32_t weight_idx = weight_vmap->add_weight(float(weights[--k]), uint32_t(vert_idx & INT_MAX));
-				if (weight_vmrefs[vert_idx].full())
-				{
-					msg("xray_re: vertex %d has too many bone influences (max 6). Reduce influences before exporting.", vert_idx);
-					MGlobal::displayError(MString("xray_re: vertex ") + vert_idx +
-						" has too many bone influences (max 6). Reduce influences before exporting.");
+				float weight = float(weights[--k]);
+				if (!std::isfinite(weight) || weight < 0) {
+					MGlobal::displayError("IX-Ray: invalid skin weight.");
 					return MS::kFailure;
 				}
+				if (weight == 0) continue;
+				uint32_t weight_idx = weight_vmap->add_weight(weight, uint32_t(vert_idx & INT_MAX));
 				weight_vmrefs[vert_idx].push_back(lw_vmref_entry(vmap_idx, weight_idx));
 			}
 		}
 	}
 
+	if (influence_limit) {
+		for (auto& refs: weight_vmrefs) {
+			std::stable_sort(refs.begin(), refs.end(), [&vmaps](const lw_vmref_entry& a, const lw_vmref_entry& b) {
+				return static_cast<xr_weight_vmap*>(vmaps[a.vmap])->weights()[a.offset] >
+					static_cast<xr_weight_vmap*>(vmaps[b.vmap])->weights()[b.offset];
+			});
+			if (refs.size() > influence_limit) refs.resize(influence_limit);
+		}
+	}
 	for (lw_face_vec_it it = faces.begin(), end = faces.end(); it != end; ++it)
 	{
 		for (uint_fast32_t i = 3; i != 0;)
@@ -424,7 +434,13 @@ static MStatus extract_weights(MFnMesh& mesh_fn, MFnSkinCluster& skin_fn,
 			lw_vmref& vmref = vmrefs[it->ref[--i]];
 			if (vmref.size() > 1)
 				continue;
-			vmref.append(weight_vmrefs[it->v[i]]);
+			for (const auto& ref: weight_vmrefs[it->v[i]]) {
+				if (vmref.full()) {
+					MGlobal::displayError("IX-Ray: too many bone influences for .object (maximum 5 plus UV).");
+					return MS::kFailure;
+				}
+				vmref.push_back(ref);
+			}
 		}
 	}
 
@@ -585,6 +601,12 @@ MStatus maya_export_tools::extract_surfaces(MFnMesh& mesh_fn, xr_surfmap_vec& su
 		return MS::kInvalidParameter;
 	}
 	surfmaps.resize(shading_groups.length());
+	for (unsigned i = 0; i < faces.length(); ++i) {
+		if (faces[i] < 0 || unsigned(faces[i]) >= shading_groups.length()) {
+			MGlobal::displayError(MString("IX-Ray: a face has no material: ") + mesh_fn.name());
+			return MS::kInvalidParameter;
+		}
+	}
 	for (unsigned i = faces.length(); i != 0;)
 	{
 		xr_surfmap* smap = surfmaps[faces[--i]];
@@ -823,7 +845,7 @@ fail:
 	return 0;
 }
 
-xr_object* maya_export_tools::create_skl_object(MObject& mesh_obj, MObject& skin_obj)
+xr_object* maya_export_tools::create_skl_object(MObject& mesh_obj, MObject& skin_obj, unsigned influence_limit)
 {
 	MStatus status;
 
@@ -850,7 +872,7 @@ xr_object* maya_export_tools::create_skl_object(MObject& mesh_obj, MObject& skin
 	if (!(status = extract_uvs(mesh_fn, mesh->faces(), mesh->vmrefs(), mesh->vmaps())))
 		goto fail;
 
-	if (!(status = extract_weights(mesh_fn, skin_fn, mesh->faces(), mesh->vmrefs(), mesh->vmaps())))
+	if (!(status = extract_weights(mesh_fn, skin_fn, mesh->faces(), mesh->vmrefs(), mesh->vmaps(), influence_limit)))
 		goto fail;
 
 	if (!(status = extract_surfaces(mesh_fn, mesh->surfmaps())))
@@ -1033,6 +1055,46 @@ MStatus maya_export_tools::export_skl_object(const char* path, bool selection_on
 	{
 		if (object->save_object(path, m_compressed ? compress_options::compress : compress_options::none))
 			status = MS::kSuccess;
+		delete object;
+	}
+	return status;
+}
+
+MStatus maya_export_tools::export_ogf(const char* path, bool selection_only)
+{
+	if (!m_options_status) {
+		MGlobal::displayError("IX-Ray: invalid OGF options.");
+		return m_options_status;
+	}
+	MObject mesh_obj, skin_obj;
+	MStatus status = find_mesh_and_skin(&mesh_obj, &skin_obj, selection_only);
+	if (!status) return status;
+
+	// The editable-object extractor works in mesh-local bind space.
+	MDagPath mesh_path;
+	MDagPath::getAPathTo(mesh_obj, mesh_path);
+	if (!mesh_path.inclusiveMatrix().isEquivalent(MMatrix::identity, 1e-6)) {
+		MGlobal::displayError("IX-Ray: freeze mesh transforms before OGF export (including parent groups).");
+		return MS::kFailure;
+	}
+	struct restore_pose {
+		std::vector<std::pair<MObject, MTransformationMatrix>> joints;
+		~restore_pose() { for (const auto& joint: joints) { MFnTransform fn(joint.first); fn.set(joint.second); } }
+	} pose;
+	for (MItDag it(MItDag::kDepthFirst, MFn::kJoint); !it.isDone(); it.next()) {
+		MFnTransform fn(it.currentItem());
+		pose.joints.emplace_back(fn.object(), fn.transformation());
+	}
+	m_skeletal = true;
+	m_vnormals = m_ogf_smoothing == ogf_smoothing::normals;
+	m_target_sdk = m_ogf_smoothing == ogf_smoothing::soc ? SDK_VER_0_4 : SDK_VER_0_6;
+	status = MS::kFailure;
+	if (xr_object* object = create_skl_object(mesh_obj, skin_obj, m_ogf_influences)) {
+		std::string error;
+		if (save_skeletal_ogf(*object, path, m_ogf_smoothing, m_ogf_influences, m_ogf_motion_refs, error)) {
+			status = MS::kSuccess;
+			MGlobal::displayInfo(MString("IX-Ray: exported skeletal OGF: ") + path);
+		} else MGlobal::displayError(MString("IX-Ray: ") + error.c_str());
 		delete object;
 	}
 	return status;
@@ -1224,6 +1286,9 @@ void maya_export_tools::set_default_options(void)
 	m_target_sdk = xray_re::SDK_VER_DEFAULT;
 	m_compressed = false;
 	m_vnormals = false;
+	m_ogf_smoothing = ogf_smoothing::normals;
+	m_ogf_influences = 4;
+	m_ogf_motion_refs.clear();
 }
 
 MStatus maya_export_tools::parse_options(const MString& options)
@@ -1254,6 +1319,17 @@ MStatus maya_export_tools::parse_options(const MString& options)
 		}
 		else if (key_value[0] == "vnormals")
 			m_vnormals = (key_value[1] == "true");
+		else if (key_value[0] == "ogf_smoothing") {
+			if (key_value[1] == "normals") m_ogf_smoothing = ogf_smoothing::normals;
+			else if (key_value[1] == "soc") m_ogf_smoothing = ogf_smoothing::soc;
+			else if (key_value[1] == "cscop") m_ogf_smoothing = ogf_smoothing::cscop;
+			else return MS::kInvalidParameter;
+		}
+		else if (key_value[0] == "ogf_influences") {
+			if (key_value[1] != "2" && key_value[1] != "4") return MS::kInvalidParameter;
+			m_ogf_influences = key_value[1].asInt();
+		}
+		else if (key_value[0] == "ogf_motion_refs") m_ogf_motion_refs = key_value[1].asChar();
 	}
 
 	return MS::kSuccess;

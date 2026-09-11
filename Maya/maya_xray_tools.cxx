@@ -48,6 +48,7 @@ const MString object_reader("IX-Ray object");
 const MString object_writer("IX-Ray object export");
 const MString skl_object_writer("IX-Ray skeletal object");
 const MString ogf_reader("IX-Ray game object");
+const MString ogf_writer("IX-Ray skeletal OGF export");
 const MString omf_reader("IX-Ray game skeletal motions");
 const MString skl_translator("IX-Ray skeletal motion");
 const MString skls_reader("IX-Ray skeletal motions");
@@ -101,6 +102,20 @@ public:
 	virtual MFileKind	identifyFile(const MFileObject& file, const char* buffer, short size) const;
 
 	static void*		creator();
+};
+
+class maya_ogf_writer: public MPxFileTranslator
+{
+public:
+	MStatus writer(const MFileObject& file, const MString& options, FileAccessMode mode) override {
+		if (mode != kExportAccessMode && mode != kExportActiveAccessMode && mode != kSaveAccessMode)
+			return MS::kFailure;
+		return maya_export_tools(options).export_ogf(file.resolvedFullName().asChar(), mode == kExportActiveAccessMode);
+	}
+	bool haveWriteMethod() const override { return true; }
+	MString defaultExtension() const override { return "ogf"; }
+	MString filter() const override { return "*.ogf"; }
+	static void* creator() { return new maya_ogf_writer; }
 };
 
 class maya_ogf_reader: public MPxFileTranslator
@@ -957,6 +972,8 @@ MStatus initializePlugin(MObject obj)
 		return status;
 	if (!(status = plugin_fn.registerFileTranslator(ogf_reader, "", maya_ogf_reader::creator, "xray_re_object_import_options", "", true)))
 		return status;
+	if (!(status = plugin_fn.registerFileTranslator(ogf_writer, "", maya_ogf_writer::creator, "xray_re_ogf_export_options", "", true)))
+		return status;
 	if (!(status = plugin_fn.registerFileTranslator(omf_reader, "", maya_omf_reader::creator, "", "", true)))
 		return status;
 	if (!(status = plugin_fn.registerFileTranslator(skl_translator, "", maya_skl_translator::creator, "", "", true)))
@@ -992,6 +1009,7 @@ MStatus uninitializePlugin(MObject obj)
 	plugin_fn.deregisterFileTranslator(skl_object_writer);
 	plugin_fn.deregisterFileTranslator(dm_reader);
 	plugin_fn.deregisterFileTranslator(ogf_reader);
+	plugin_fn.deregisterFileTranslator(ogf_writer);
 	plugin_fn.deregisterFileTranslator(omf_reader);
 	plugin_fn.deregisterFileTranslator(skl_translator);
 	plugin_fn.deregisterFileTranslator(skls_reader);
