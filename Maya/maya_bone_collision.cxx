@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "maya_bone_collision.h"
 #include "maya_bone_collision_script.h"
+#include "maya_motion_browser_script.h"
 #include "xr_bone.h"
 #include <maya/MAngle.h>
 #include <maya/MDistance.h>
@@ -127,8 +128,18 @@ MStatus initialize_bone_collision()
 		python_string(bone_collision_script) + ", _xbc.__dict__)\n_xbc.install()");
 }
 
+MStatus initialize_motion_browser()
+{
+	return MGlobal::executePythonCommand(MString(
+		"import sys, types\n"
+		"_xb = types.ModuleType('xray_motion_browser')\n"
+		"sys.modules['xray_motion_browser'] = _xb\nexec(") +
+		python_string(python_motion_browser_script) + ", _xb.__dict__)\n_xb.install_drop()");
+}
+
 void uninitialize_bone_collision()
 {
+	MGlobal::executePythonCommand("import xray_motion_browser; xray_motion_browser.uninstall_drop()");
 	MGlobal::executePythonCommand("import xray_bone_collision; xray_bone_collision.uninstall()");
 }
 
@@ -215,7 +226,7 @@ MStatus import_bone_collision(MObject joint, const xr_bone& bone)
 		a.angle("xrayShapeRotateZ", rotation.z);
 	}
 	catch (const std::exception& e) { return error(e, joint); }
-	return python_bone("rebuild_shape", joint);
+	return python_bone("import_shape", joint);
 }
 
 MStatus export_bone_collision(MObject joint, xr_bone& bone)

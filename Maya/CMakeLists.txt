@@ -14,12 +14,16 @@ project(MayaTools)
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/xray_bone_collision.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/xray_motion_browser.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/xray_re_object_options.mel")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/xray_bone_collision.py" MAYA_BONE_COLLISION_SCRIPT)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/xray_motion_browser.py" MAYA_MOTION_BROWSER_SCRIPT)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/xray_re_object_options.mel" MAYA_OBJECT_OPTIONS_SCRIPT)
 string(REPLACE "\n" "\n)IXR_PY\"\nR\"IXR_PY(" MAYA_BONE_COLLISION_SCRIPT "${MAYA_BONE_COLLISION_SCRIPT}")
+string(REPLACE "\n" "\n)IXR_PY\"\nR\"IXR_PY(" MAYA_MOTION_BROWSER_SCRIPT "${MAYA_MOTION_BROWSER_SCRIPT}")
 string(REPLACE "\n" "\n)IXR_MEL\"\nR\"IXR_MEL(" MAYA_OBJECT_OPTIONS_SCRIPT "${MAYA_OBJECT_OPTIONS_SCRIPT}")
 configure_file(maya_bone_collision_script.h.in maya_bone_collision_script.h @ONLY)
+configure_file(maya_motion_browser_script.h.in maya_motion_browser_script.h @ONLY)
 configure_file(maya_options_script.h.in maya_options_script.h @ONLY)
 
 file(GLOB_RECURSE MAYA_TOOLS_ALL_FILES CONFIGURE_DEPENDS "*.cpp" "*.cxx" "*.h")

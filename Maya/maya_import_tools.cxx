@@ -8,8 +8,11 @@
 #endif
 
 #include <maya/MAnimControl.h>
+#include <maya/MAngle.h>
+#include <maya/MFileObject.h>
 #include <maya/MDGModifier.h>
 #include <maya/MDagPath.h>
+#include <maya/MTime.h>
 #include <maya/MDagPathArray.h>
 #include <maya/MDistance.h>
 #include <maya/MEulerRotation.h>
@@ -71,7 +74,6 @@ maya_import_tools::maya_import_tools(const xray_re::xr_object* object, MStatus* 
 
 maya_import_tools::~maya_import_tools()
 {
-	MGlobal::clearSelectionList();
 }
 
 static MString make_maya_name(const std::string& base, const char* old_suffix, const char* suffix = "")
@@ -187,11 +189,11 @@ MStatus maya_import_tools::import_object(const xr_object* object)
 
 	if (!bones.empty())
 	{
-		MObject character_obj = create_character(&status);
-		if (status && !object->motions().empty())
+		for (xr_skl_motion_vec_cit it = object->motions().begin(),
+				end = object->motions().end(); it != end; ++it)
 		{
-			reset_animation_state();
-			status = import_motions(object->motions(), character_obj);
+			status = import_selected_motion(*it);
+			if (!status) break;
 		}
 	}
 
@@ -754,66 +756,16 @@ MStatus maya_import_tools::import_mesh(const xr_mesh* mesh, const xr_bone_vec& b
 
 MObject maya_import_tools::lookup_character(MStatus* return_status)
 {
-	MSelectionList selection_list;
-	MStatus status = MGlobal::getActiveSelectionList(selection_list);
-	if (selection_list.isEmpty())
-	{
-		MGlobal::displayError("xray_re: nothing is selected");
-		if (return_status)
-			*return_status = MS::kInvalidParameter;
-		return MObject::kNullObj;
-	}
-	MObject character_obj;
-	selection_list.getDependNode(0, character_obj);
-	if (!character_obj.hasFn(MFn::kCharacter))
-	{
-		MGlobal::displayError("xray_re: selected object is not a character");
-		if (return_status)
-			*return_status = MS::kInvalidParameter;
-		return MObject::kNullObj;
-	}
-	MFnCharacter character_fn(character_obj, &status);
-	MPlugArray member_plugs;
-	character_fn.getMemberPlugs(member_plugs);
-	for (unsigned i = member_plugs.length(); i != 0;)
-	{
-		MObject member_obj = member_plugs[--i].node();
-		if (!member_obj.hasFn(MFn::kJoint))
-			continue;
-		MFnIkJoint joint_fn(member_obj);
-		MObject& joint_obj = m_joints[joint_fn.name().asChar()];
-		if (joint_obj.isNull())
-		{
-			joint_obj = member_obj;
-			msg("xray_re: found bone %s", joint_fn.name().asChar());
-			MGlobal::displayInfo(MString("xray_re: found bone ") + joint_fn.name().asChar());
-		}
-	}
 	if (return_status)
-		*return_status = status;
-	return character_obj;
+		*return_status = MS::kSuccess;
+	return MObject::kNullObj;
 }
 
 MObject maya_import_tools::create_character(MStatus* return_status)
 {
-	MStatus status;
-	MSelectionList member_objs;
-	for (maya_object_map_it it = m_joints.begin(), end = m_joints.end(); it != end; ++it)
-	{
-		if (!(status = member_objs.add(it->second)))
-		{
-			if (return_status)
-				*return_status = status;
-			return MObject::kNullObj;
-		}
-	}
-	MFnCharacter character_fn;
-	MObject character_obj = character_fn.create(member_objs, MFnSet::kNone, &status);
-	if (status)
-		character_fn.setName("character");
 	if (return_status)
-		*return_status = status;
-	return character_obj;
+		*return_status = MS::kSuccess;
+	return MObject::kNullObj;
 }
 
 void maya_import_tools::reset_animation_state() const
@@ -843,128 +795,115 @@ static MFnAnimCurve::InfinityType maya_infinity(uint8_t behaviour)
 	}
 }
 
-static inline void append_key(MTimeArray& times, MDoubleArray& values, double time, double value)
+static MStatus write_motion_keys(const maya_object_map& joints, const xr_skl_motion* motion,
+		double scale_factor, double time_stretch, double start_frame, double* end_frame)
 {
-	unsigned size = values.length();
-	if (size == 0 || values[size-1] != value)
+	if (!std::isfinite(scale_factor) || scale_factor <= 0 ||
+		!std::isfinite(time_stretch) || time_stretch <= 0 ||
+		!std::isfinite(start_frame) || !std::isfinite(motion->fps()) ||
+		motion->fps() <= 0 || motion->frame_end() <= motion->frame_start())
 	{
-		times.append(MTime(time, MTime::kSeconds));
-		values.append(value);
+		MGlobal::displayError("IX-Ray: invalid motion timing or import options");
+		return MS::kFailure;
 	}
-}
-
-MStatus maya_import_tools::import_motion(const xray_re::xr_skl_motion* smotion, MObject& character_obj)
-{
-	MStatus status;
-	MDGModifier dg_modifier;
-
-	MFnCharacter character_fn(character_obj);
-
-	MString clip_name(smotion->name().c_str());
-
-	double fps = smotion->fps();
-	double start_time = smotion->frame_start()/fps;
-	double end_time = smotion->frame_end()/fps;
-
-	MFnClip clip_fn;
-	MObject clip_obj = clip_fn.createSourceClip(MTime(start_time, MTime::kSeconds),
-			MTime(end_time - start_time, MTime::kSeconds), dg_modifier, &status);
-	if (!status)
+	const char* attrs[] = { "tx", "ty", "tz", "rx", "ry", "rz" };
+	// Validate every destination before editing the scene.
+	for (const auto* bone : motion->bone_motions())
 	{
-		msg("xray_re: can't create clip %s", clip_name.asChar());
-		MGlobal::displayError(MString("xray_re: can't create clip ") + clip_name.asChar());
-		return status;
-	}
-	clip_fn.setName(clip_name);
-	dg_modifier.doIt();
-
-	MTimeArray times[6];
-	MDoubleArray values[6];
-
-	for (xr_bone_motion_vec_cit it = smotion->bone_motions().begin(),
-			end = smotion->bone_motions().end(); it != end; ++it)
-	{
-		const xr_bone_motion* bmotion = *it;
-		maya_object_map_it joint_it = m_joints.find(bmotion->name());
-		if (joint_it == m_joints.end())
+		auto found = joints.find(bone->name());
+		if (found == joints.end())
 		{
-			msg("xray_re: can't find bone %s referenced by motion %s",
-					bmotion->name().c_str(), smotion->name().c_str());
-			MGlobal::displayError(MString("xray_re: can't find bone ") +
-					bmotion->name().c_str() + " referenced by motion " + smotion->name().c_str());
-			continue;
+			MGlobal::displayError(MString("IX-Ray: selected skeleton is missing bone ") + bone->name().c_str());
+			return MS::kFailure;
 		}
-		MFnTransform joint_fn(joint_it->second, &status);
-		CHECK_MSTATUS(status);
-
-		MString name(clip_name);
-		name += '_';
-		name += bmotion->name().c_str();
-		name += '_';
-
-		for (int32_t frame = smotion->frame_start(), frame_end = smotion->frame_end();
-				frame < frame_end; ++frame)
+		MFnDependencyNode node(found->second);
+		for (const char* attr : attrs)
 		{
-			double time = frame/fps;
-
-			fvector3 offs, rot;
-			bmotion->evaluate(float(time), offs, rot);
-
-			append_key(times[0], values[0], time, MDistance(offs.x, MDistance::kMeters).asCentimeters());
-			append_key(times[1], values[1], time, MDistance(offs.y, MDistance::kMeters).asCentimeters());
-			append_key(times[2], values[2], time, MDistance(-offs.z, MDistance::kMeters).asCentimeters());
-
-			MEulerRotation maya_rot(-rot.x, -rot.y, rot.z, MEulerRotation::kZXY);
-			maya_rot.reorderIt(MEulerRotation::kXYZ);
-			append_key(times[3], values[3], time, maya_rot.x);
-			append_key(times[4], values[4], time, maya_rot.y);
-			append_key(times[5], values[5], time, maya_rot.z);
-		}
-
-		const xr_envelope* const* envelopes = bmotion->envelopes();
-		for (uint_fast32_t i = 6; i != 0;)
-		{
-			static const MString k_plug_names[6] = { "tx", "ty", "tz", "rx", "ry", "rz" };
-
-			MFnAnimCurve curve_fn;
-			MObject curve_obj = curve_fn.create(--i >= 3 ?
-					MFnAnimCurve::kAnimCurveTA : MFnAnimCurve::kAnimCurveTL,
-					0, &status);
-			CHECK_MSTATUS(status);
-			curve_fn.setName(name + k_plug_names[i]);
-			curve_fn.setPreInfinityType(maya_infinity(envelopes[i]->pre_behaviour()));
-			curve_fn.setPostInfinityType(maya_infinity(envelopes[i]->post_behaviour()));
-			status = curve_fn.addKeys(&times[i], &values[i],
-					MFnAnimCurve::kTangentStep, MFnAnimCurve::kTangentStep);
-			CHECK_MSTATUS(status);
-			auto Plug = joint_fn.findPlug(k_plug_names[i]);
-			status = character_fn.addCurveToClip(curve_obj, clip_obj,
-					Plug, dg_modifier);
-			CHECK_MSTATUS(status);
-			times[i].clear();
-			values[i].clear();
+			MPlug plug = node.findPlug(attr, true);
+			MPlugArray sources;
+			plug.connectedTo(sources, true, false);
+			if (plug.isLocked() || (sources.length() && !sources[0].node().hasFn(MFn::kAnimCurve)))
+			{
+				MGlobal::displayError(MString("IX-Ray: locked or driven bone channel: ") + plug.name());
+				return MS::kFailure;
+			}
 		}
 	}
-
-	status = character_fn.attachSourceToCharacter(clip_obj, dg_modifier);
-	CHECK_MSTATUS(status);
-	dg_modifier.doIt();
-
+	const double frame_step = MTime(time_stretch / motion->fps(), MTime::kSeconds).as(MTime::uiUnit());
+	const double last = start_frame + (motion->frame_end() - motion->frame_start() - 1) * frame_step;
+	if (end_frame) *end_frame = last;
+	for (const auto* bone : motion->bone_motions())
+	{
+		MString path = MFnDagNode(joints.find(bone->name())->second).fullPathName();
+		MString command("cutKey -clear -time \"");
+		command += start_frame;
+		command += ":";
+		command += last;
+		command += "\" -at tx -at ty -at tz -at rx -at ry -at rz \"";
+		command += path;
+		command += "\";";
+		for (int32_t frame = motion->frame_start(); frame < motion->frame_end(); ++frame)
+		{
+			fvector3 offset, rotation;
+			bone->evaluate(float(frame / double(motion->fps())), offset, rotation);
+			MEulerRotation euler(-rotation.x, -rotation.y, rotation.z, MEulerRotation::kZXY);
+			MFnDependencyNode node(joints.find(bone->name())->second);
+			euler.reorderIt(static_cast<MEulerRotation::RotationOrder>(node.findPlug("rotateOrder", true).asShort()));
+			double values[] = {
+				MDistance(offset.x * scale_factor, MDistance::kMeters).as(MDistance::uiUnit()),
+				MDistance(offset.y * scale_factor, MDistance::kMeters).as(MDistance::uiUnit()),
+				MDistance(-offset.z * scale_factor, MDistance::kMeters).as(MDistance::uiUnit()),
+				MAngle(euler.x).as(MAngle::uiUnit()), MAngle(euler.y).as(MAngle::uiUnit()), MAngle(euler.z).as(MAngle::uiUnit()) };
+			for (unsigned axis = 0; axis < 6; ++axis)
+			{
+				command += "setKeyframe -itt linear -ott linear -time ";
+				command += start_frame + (frame - motion->frame_start()) * frame_step;
+				command += " -value ";
+				command += values[axis];
+				command += " -at "; command += attrs[axis];
+				command += " \""; command += path; command += "\";";
+			}
+		}
+		MStatus status = MGlobal::executeCommand(command, false, true);
+		if (!status) return status;
+	}
 	return MS::kSuccess;
 }
 
-MStatus maya_import_tools::import_motions(const xr_skl_motion_vec& motions, MObject& character_obj)
+MStatus maya_import_tools::import_selected_motion(const xr_skl_motion* motion, double* end_frame)
 {
-	MStatus status = MS::kFailure;
-
-	for (xr_skl_motion_vec_cit it = motions.begin(), end = motions.end();
-			it != end; ++it)
+	MSelectionList selected;
+	MGlobal::getActiveSelectionList(selected);
+	if (selected.isEmpty())
 	{
-		if (!(status = import_motion(*it, character_obj)))
-			break;
+		if (!m_joints.empty())
+			return write_motion_keys(m_joints, motion, m_scale_factor, m_time_stretch, m_start_frame, end_frame);
+		MGlobal::displayError("IX-Ray: no skeleton selected");
+		return MS::kFailure;
 	}
-
-	return status;
+	m_joints.clear();
+	for (unsigned i = 0; i < selected.length(); ++i)
+	{
+		MDagPath root;
+		if (!selected.getDagPath(i, root)) continue;
+		MItDag it;
+		if (!it.reset(root, MItDag::kDepthFirst, MFn::kJoint)) continue;
+		for (; !it.isDone(); it.next())
+		{
+			MObject joint = it.currentItem();
+			std::string name = MFnDagNode(joint).name().asChar();
+			const auto colon = name.rfind(':');
+			if (colon != std::string::npos) name.erase(0, colon + 1);
+			auto found = m_joints.find(name);
+			if (found != m_joints.end() && found->second != joint)
+			{
+				MGlobal::displayError("IX-Ray: duplicate bone names; select one skeleton");
+				return MS::kFailure;
+			}
+			m_joints[name] = joint;
+		}
+	}
+	return write_motion_keys(m_joints, motion, m_scale_factor, m_time_stretch, m_start_frame, end_frame);
 }
 
 void maya_import_tools::set_default_options(void)
@@ -972,6 +911,9 @@ void maya_import_tools::set_default_options(void)
 	m_target_sdk = xray_re::SDK_VER_DEFAULT;
 	m_smoothing_mode = "normals";
 	m_group_name.clear();
+	m_scale_factor = 1.0;
+	m_time_stretch = 1.0;
+	m_start_frame = 0.0;
 }
 
 MStatus maya_import_tools::parse_options(const MString& options)
@@ -1003,6 +945,18 @@ MStatus maya_import_tools::parse_options(const MString& options)
 		else if (key_value[0] == "group_name")
 		{
 			m_group_name = key_value[1].asChar();
+		}
+		else if (key_value[0] == "scale_factor")
+		{
+			m_scale_factor = key_value[1].asDouble();
+		}
+		else if (key_value[0] == "time_stretch")
+		{
+			m_time_stretch = key_value[1].asDouble();
+		}
+		else if (key_value[0] == "start_frame")
+		{
+			m_start_frame = key_value[1].asDouble();
 		}
 	}
 

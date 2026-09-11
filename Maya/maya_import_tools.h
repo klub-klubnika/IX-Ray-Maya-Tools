@@ -41,8 +41,7 @@ public:
 			maya_import_tools(const xray_re::xr_object* object, MStatus* return_status = 0, const MString& options = "");
 
 	MStatus		import_object(const xray_re::xr_object* object);
-	MStatus		import_motion(const xray_re::xr_skl_motion* motion, MObject& character_obj);
-	MStatus		import_motions(const std::vector<xray_re::xr_skl_motion*>& motions, MObject& character_obj);
+	MStatus		import_selected_motion(const xray_re::xr_skl_motion* motion, double* end_frame = 0);
 
 	void		reset_animation_state() const;
 	MObject		lookup_character(MStatus* return_status = 0);
@@ -63,6 +62,9 @@ private:
 	xray_re::sdk_version m_target_sdk;
 	std::string	m_smoothing_mode;
 	std::string	m_group_name;
+	double		m_scale_factor;
+	double		m_time_stretch;
+	double		m_start_frame;
 };
 
 #endif

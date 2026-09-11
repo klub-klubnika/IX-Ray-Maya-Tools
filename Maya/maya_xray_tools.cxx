@@ -25,6 +25,7 @@
 #include "maya_xray_material.h"
 #include "maya_bone_collision.h"
 #include "maya_options_script.h"
+#include "maya_motions_browser.h"
 #include "xr_file_system.h"
 #include "xr_log.h"
 #include "xr_object.h"
@@ -625,11 +626,11 @@ MStatus maya_omf_reader::reader(const MFileObject& file, const MString& options,
 		if (omf->load_omf(path.asChar()))
 		{
 			maya_import_tools imp_tools;
-			MObject character_obj = imp_tools.lookup_character(&status);
-			if (status)
+			for (xr_skl_motion_vec_cit it = omf->motions().begin(),
+					end = omf->motions().end(); it != end; ++it)
 			{
-				imp_tools.reset_animation_state();
-				status = imp_tools.import_motions(omf->motions(), character_obj);
+				if (!(status = imp_tools.import_selected_motion(*it)))
+					break;
 			}
 		}
 		else
@@ -638,6 +639,7 @@ MStatus maya_omf_reader::reader(const MFileObject& file, const MString& options,
 			MGlobal::displayError(MString("xray_re: can't open ") + path);
 		}
 		delete omf;
+		if (status) status = record_imported_motion_file(path);
 	}
 	return status;
 }
@@ -670,13 +672,9 @@ MStatus maya_skl_translator::reader(const MFileObject& file, const MString& opti
 			delete smotion;
 			return MS::kFailure;
 		}
-		MObject character_obj = imp_tools.lookup_character(&status);
-		if (status)
-		{
-			imp_tools.reset_animation_state();
-			status = imp_tools.import_motion(smotion, character_obj);
-		}
+		status = imp_tools.import_selected_motion(smotion);
 		delete smotion;
+		if (status) status = record_imported_motion_file(path);
 	}
 	return status;
 }
@@ -727,13 +725,14 @@ MStatus maya_skls_reader::reader(const MFileObject& file, const MString& options
 			delete object;
 			return MS::kFailure;
 		}
-		MObject character_obj = imp_tools.lookup_character(&status);
-		if (status)
+		for (xr_skl_motion_vec_cit it = object->motions().begin(),
+				end = object->motions().end(); it != end; ++it)
 		{
-			imp_tools.reset_animation_state();
-			status = imp_tools.import_motions(object->motions(), character_obj);
+			if (!(status = imp_tools.import_selected_motion(*it)))
+				break;
 		}
 		delete object;
+		if (status) status = record_imported_motion_file(path);
 	}
 	return status;
 }
@@ -744,7 +743,7 @@ MString maya_skls_reader::defaultExtension() const { return MString("skls"); }
 
 MString maya_skls_reader::filter() const
 {
-#	if (MAYA_API_VERSION >= 201100) 
+#	if (MAYA_API_VERSION >= 201100)
 		return MString("*.skls");
 #	else
 		return MString("*.sk*");
@@ -966,7 +965,15 @@ MStatus initializePlugin(MObject obj)
 		return status;
 	if (!(status = plugin_fn.registerFileTranslator(anm_writer, "", maya_anm_writer::creator, "", "", true)))
 		return status;
+	if (!(status = initialize_motion_browser()))
+		return status;
 	if (!(status = initialize_bone_collision()))
+		return status;
+	if (!(status = plugin_fn.registerCommand("ixrayMotionList", motion_list_command_creator, motion_list_syntax_creator)))
+		return status;
+	if (!(status = plugin_fn.registerCommand("ixrayMotionLoad", motion_load_command_creator, motion_load_syntax_creator)))
+		return status;
+	if (!(status = plugin_fn.registerCommand("ixrayMotionExport", motion_export_command_creator, motion_export_syntax_creator)))
 		return status;
 
 	return status;
@@ -976,6 +983,9 @@ MStatus uninitializePlugin(MObject obj)
 {
 	uninitialize_bone_collision();
 	MFnPlugin plugin_fn(obj);
+	plugin_fn.deregisterCommand("ixrayMotionList");
+	plugin_fn.deregisterCommand("ixrayMotionLoad");
+	plugin_fn.deregisterCommand("ixrayMotionExport");
 	maya_xray_material::uninitialize(plugin_fn);
 	plugin_fn.deregisterFileTranslator(object_reader);
 	plugin_fn.deregisterFileTranslator(object_writer);

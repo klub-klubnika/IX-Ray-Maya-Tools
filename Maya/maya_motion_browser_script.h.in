@@ -1,0 +1,2 @@
+#pragma once
+static const char python_motion_browser_script[] = R"IXR_PY(@MAYA_MOTION_BROWSER_SCRIPT@)IXR_PY";

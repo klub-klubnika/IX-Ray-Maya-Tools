@@ -20,6 +20,10 @@ global proc int xray_re_object_import_options(string $parent, string $action, st
 		if (`optionVar -exists "ixrayImportSplitParts"`)
 			$split_parts = `optionVar -q "ixrayImportSplitParts"`;
 		checkBox -label "Split mesh into parts" -value $split_parts "split_parts";
+		int $show_shapes = 1;
+		if (`optionVar -exists "ixrayImportShowShapes"`)
+			$show_shapes = `optionVar -q "ixrayImportShowShapes"`;
+		checkBox -label "Show Collision Shapes" -value $show_shapes "ixray_show_shapes";
 
 		text -label "Smoothing:" -align "left";
 		radioCollection "smoothing_mode";
@@ -54,6 +58,7 @@ global proc int xray_re_object_import_options(string $parent, string $action, st
 	else if ($action == "query")
 	{
 		$options = "";
+		optionVar -iv "ixrayImportShowShapes" (`checkBox -q -value "ixray_show_shapes"`);
 
 		if (`checkBox -q -value "split_parts"`)
 		{

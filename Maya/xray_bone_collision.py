@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from functools import partial
 
+import sys
 from maya import cmds, mel
 from maya.api import OpenMaya as om
 
@@ -157,6 +158,14 @@ def rebuild_shape(joint):
 		return _rebuild_shape(joint)
 
 
+def import_shape(joint):
+	helper = rebuild_shape(joint)
+	if helper and cmds.optionVar(exists="ixrayImportShowShapes"):
+		_set_helper_visibility(helper, bool(cmds.optionVar(query="ixrayImportShowShapes")))
+		_refresh_collision_outliners()
+	return helper
+
+
 def _rebuild_shape(joint):
 	ensure_bone(joint)
 	shape_type = cmds.getAttr(joint + ".xrayShapeType")
@@ -260,12 +269,27 @@ def initialize_selected(*_):
 	show_editor()
 
 
+def _set_helper_visibility(node, visible):
+	cmds.setAttr(node + ".visibility", visible)
+	cmds.setAttr(node + ".hiddenInOutliner", not visible)
+
+
 def set_visibility(visible, *_):
 	with undo_chunk():
 		for plug in cmds.ls("*.xrayCollisionHelper", recursive=True) or []:
 			node = plug.rsplit(".", 1)[0]
 			if _is_helper(node):
-				cmds.setAttr(node + ".visibility", visible)
+				_set_helper_visibility(node, visible)
+	_refresh_collision_outliners()
+
+
+def _refresh_collision_outliners():
+	# Outliners may ignore hiddenInOutliner or retain stale rows until refreshed.
+	if not cmds.about(batch=True):
+		for editor in cmds.lsUI(editors=True) or []:
+			if cmds.outlinerEditor(editor, exists=True):
+				cmds.outlinerEditor(editor, edit=True, ignoreHiddenAttribute=False,
+								   refresh=True)
 
 
 def _refresh_templates():
@@ -477,6 +501,11 @@ def set_game_root(*_):
 	cmds.warning("IX-Ray: game working directory saved. Restart Maya for it to take effect")
 
 
+def run_motion_browser(*_):
+	import xray_motion_browser
+	xray_motion_browser.show()
+
+
 def install():
 	if cmds.about(batch=True):
 		return
@@ -505,6 +534,7 @@ global proc ixrayBoneAEReplace(string $plug)
 	cmds.menuItem(label="Show All", command=partial(set_visibility, True))
 	cmds.menuItem(label="Hide All", command=partial(set_visibility, False))
 	cmds.menuItem(parent=MENU, divider=True)
+	cmds.menuItem(parent=MENU, label="Moution Browser...", command=run_motion_browser)
 	cmds.menuItem(parent=MENU, label="Set Game Root...", command=set_game_root)
 	_refresh_templates()
 
