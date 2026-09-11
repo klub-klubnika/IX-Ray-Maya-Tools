@@ -25,10 +25,12 @@
 #include <maya/MFnIkJoint.h>
 #include <maya/MFnMatrixData.h>
 #include <maya/MFnMesh.h>
+#include <maya/MFnDependencyNode.h>
 #include <maya/MFnSet.h>
 #include <maya/MFnSingleIndexedComponent.h>
 #include <maya/MFnSkinCluster.h>
 #include <maya/MFnTransform.h>
+#include <maya/MFnTypedAttribute.h>
 #include <maya/MGlobal.h>
 #include <maya/MIntArray.h>
 #include <maya/MObjectArray.h>
@@ -55,6 +57,50 @@
 using namespace xray_re;
 
 static MObject create_texture(const std::string& texture, MStatus* return_status = 0);
+
+namespace {
+
+// The order in an X-Ray bone vector is its global OMF bone-ID order.  Maya's
+// skinCluster is free to reorder influences, so retain the source order on
+// the root joint for a later OMF export.
+const char* const k_xray_bone_order_attr = "ixrayBoneOrder";
+
+static MStatus save_xray_bone_order(const xr_bone_vec& bones, const maya_object_map& joints)
+{
+	if (bones.empty()) return MS::kSuccess;
+	const xr_bone* root_bone = 0;
+	for (xr_bone_vec_cit it = bones.begin(); it != bones.end(); ++it) {
+		if ((*it)->is_root()) { root_bone = *it; break; }
+	}
+	if (!root_bone) return MS::kFailure;
+	const maya_object_map::const_iterator root = joints.find(root_bone->name());
+	if (root == joints.end()) return MS::kFailure;
+
+	MStatus status;
+	MFnDependencyNode root_fn(root->second, &status);
+	if (!status) return status;
+	MPlug order_plug = root_fn.findPlug(k_xray_bone_order_attr, true, &status);
+	if (!status) {
+		MFnTypedAttribute attr_fn;
+		MObject attr = attr_fn.create(k_xray_bone_order_attr, "ixbo", MFnData::kString,
+			MObject::kNullObj, &status);
+		if (!status) return status;
+		attr_fn.setHidden(true);
+		attr_fn.setStorable(true);
+		if (!(status = root_fn.addAttribute(attr))) return status;
+		order_plug = root_fn.findPlug(k_xray_bone_order_attr, true, &status);
+		if (!status) return status;
+	}
+
+	MString order;
+	for (xr_bone_vec_cit it = bones.begin(); it != bones.end(); ++it) {
+		order += (*it)->name().c_str();
+		order += "\n";
+	}
+	return order_plug.setString(order);
+}
+
+} // namespace
 
 maya_import_tools::maya_import_tools(const MString& options)
 {
@@ -132,6 +178,8 @@ MStatus maya_import_tools::import_object(const xr_object* object)
 		}
 	}
 	if (!status)
+		return status;
+	if (!(status = save_xray_bone_order(bones, m_joints)))
 		return status;
 
 	maya_object_map shared_textures;

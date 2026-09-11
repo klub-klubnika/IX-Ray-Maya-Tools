@@ -35,6 +35,8 @@
 #include <maya/MMatrix.h>
 #include <maya/MQuaternion.h>
 #include <cctype>
+#include <map>
+#include <sstream>
 #include "maya_export_tools.h"
 #include "maya_bone_collision.h"
 #include "xr_object.h"
@@ -59,6 +61,51 @@ struct omf_sample {
 	fvector3 translation;
 	MQuaternion rotation;
 };
+
+const char* const k_xray_bone_order_attr = "ixrayBoneOrder";
+
+// Return the original global bone order saved by the X-Ray object importer.
+// The attribute is deliberately read from ancestors because only the root
+// joint owns it, while a skinCluster reports every influence separately.
+static bool get_imported_bone_order(const MDagPathArray& joints,
+	const std::vector<std::string>& bone_names, std::vector<unsigned>& bone_order)
+{
+	MString stored_order;
+	bool found = false;
+	for (unsigned i = 0; i != joints.length() && !found; ++i) {
+		MObject current = joints[i].node();
+		while (!current.isNull()) {
+			MStatus status;
+			MFnDependencyNode node_fn(current, &status);
+			if (!status) break;
+			MPlug plug = node_fn.findPlug(k_xray_bone_order_attr, true, &status);
+			if (status && plug.getValue(stored_order) == MS::kSuccess) {
+				found = true;
+				break;
+			}
+			MFnDagNode dag_fn(current, &status);
+			if (!status || dag_fn.parentCount() == 0) break;
+			current = dag_fn.parent(0);
+		}
+	}
+	if (!found || stored_order.length() == 0) return false;
+
+	std::map<std::string, unsigned> joint_indices;
+	for (unsigned i = 0; i != bone_names.size(); ++i)
+		if (!joint_indices.insert(std::make_pair(bone_names[i], i)).second) return false;
+
+	bone_order.clear();
+	std::istringstream stream(stored_order.asChar());
+	std::string name;
+	while (std::getline(stream, name)) {
+		if (!name.empty()) {
+			const std::map<std::string, unsigned>::const_iterator it = joint_indices.find(name);
+			if (it == joint_indices.end()) return false;
+			bone_order.push_back(it->second);
+		}
+	}
+	return bone_order.size() == joints.length();
+}
 
 static int16_t quantize_rotation(double value)
 {
@@ -1378,11 +1425,13 @@ MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
 		}
 		bone_names[i] = getRealName(joint);
 	}
-	// Match XrayExportTool: motion blocks and bone IDs both use the original
-	// skeletal object's global bone list.  A partition is only a grouping and
-	// must never change the order of key blocks.
 	std::vector<unsigned> bone_order(joints.length());
-	for (unsigned i = 0; i != joints.length(); ++i) bone_order[i] = i;
+	if (!get_imported_bone_order(joints, bone_names, bone_order)) {
+		// A manually created skeleton has no source global IDs.  The OMF remains
+		// self-consistent, but cannot safely be merged with an unrelated OMF.
+		for (unsigned i = 0; i != joints.length(); ++i) bone_order[i] = i;
+		MGlobal::displayWarning("IX-Ray: source bone order was not found; OMF uses skinCluster influence order and may not merge correctly. Re-import the source .object/.ogf before exporting.");
+	}
 
 	const MTime saved_time(MAnimControl::currentTime());
 	const MTime::Unit unit = MTime::uiUnit();
