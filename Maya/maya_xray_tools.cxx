@@ -12,6 +12,7 @@
 #include <maya/MFnTransform.h>
 #include <maya/MFnAnimCurve.h>
 #include <maya/MFnDependencyNode.h>
+#include <maya/MFnTypedAttribute.h>
 #include <maya/MEulerRotation.h>
 #include <maya/MDistance.h>
 #include <maya/MDGModifier.h>
@@ -19,6 +20,7 @@
 #include <maya/MDoubleArray.h>
 #include <maya/MSelectionList.h>
 #include <maya/MDagPath.h>
+#include <maya/MItDag.h>
 #include <maya/MPlug.h>
 #include "maya_import_tools.h"
 #include "maya_export_tools.h"
@@ -50,9 +52,59 @@ const MString skl_object_writer("IX-Ray skeletal object");
 const MString ogf_reader("IX-Ray game object");
 const MString ogf_writer("IX-Ray skeletal OGF export");
 const MString omf_reader("IX-Ray game skeletal motions");
+const MString omf_writer("IX-Ray skeletal OMF export");
 const MString skl_translator("IX-Ray skeletal motion");
 const MString skls_reader("IX-Ray skeletal motions");
 const MString anm_writer("IX-Ray camera motion");
+
+static const char omf_bone_order_attr[] = "ixrayOmfBoneOrder";
+static const char omf_bone_order_option[] = "ixrayLastOmfBoneOrder";
+static const char omf_bone_ids_option[] = "ixrayLastOmfBoneIds";
+
+static std::string maya_real_name(MFnDependencyNode& node)
+{
+	std::string name = node.name().asChar();
+	const size_t delimiter = name.find_last_of(':');
+	return delimiter == std::string::npos ? name : name.substr(delimiter + 1);
+}
+
+static void remember_omf_bone_order(const xr_ogf_v4& omf)
+{
+	if (omf.partitions().empty() || omf.partitions()[0]->bones().empty()) return;
+	const std::vector<std::string>& bones = omf.partitions()[0]->bones();
+	MString value;
+	MString ids;
+	for (const std::string& bone: bones) { value += bone.c_str(); value += "\n"; }
+	const xr_bone_vec& all_bones = omf.bones();
+	for (const std::string& bone: bones) {
+		for (size_t id = 0; id != all_bones.size(); ++id) {
+			if (all_bones[id] && all_bones[id]->name() == bone) {
+				ids += bone.c_str(); ids += "\t"; ids += int(id); ids += "\n";
+				break;
+			}
+		}
+	}
+	// References may reject dynamic attributes, so retain a session fallback too.
+	MGlobal::setOptionVarValue(omf_bone_order_option, value);
+	MGlobal::setOptionVarValue(omf_bone_ids_option, ids);
+	MObject root;
+	for (MItDag it(MItDag::kDepthFirst, MFn::kJoint); !it.isDone(); it.next()) {
+		MFnDependencyNode node(it.currentItem());
+		if (maya_real_name(node) == bones[0]) { root = it.currentItem(); break; }
+	}
+	if (root.isNull()) return;
+	MFnDependencyNode node(root);
+	MStatus status;
+	MPlug plug = node.findPlug(omf_bone_order_attr, true, &status);
+	if (!status) {
+		MFnTypedAttribute attr;
+		MObject attr_obj = attr.create(omf_bone_order_attr, omf_bone_order_attr, MFnData::kString, MObject::kNullObj, &status);
+		if (!status || !(status = node.addAttribute(attr_obj))) return;
+		plug = node.findPlug(omf_bone_order_attr, true, &status);
+		if (!status) return;
+	}
+	plug.setString(value);
+}
 
 class maya_dm_reader: public MPxFileTranslator
 {
@@ -141,6 +193,20 @@ public:
 	virtual MFileKind	identifyFile(const MFileObject& file, const char* buffer, short size) const;
 
 	static void*		creator();
+};
+
+class maya_omf_writer: public MPxFileTranslator
+{
+public:
+	MStatus writer(const MFileObject& file, const MString& options, FileAccessMode mode) override {
+		if (mode != kExportAccessMode && mode != kExportActiveAccessMode && mode != kSaveAccessMode)
+			return MS::kFailure;
+		return maya_export_tools(options).export_omf(file.resolvedFullName().asChar(), mode == kExportActiveAccessMode);
+	}
+	bool haveWriteMethod() const override { return true; }
+	MString defaultExtension() const override { return "omf"; }
+	MString filter() const override { return "*.omf"; }
+	static void* creator() { return new maya_omf_writer; }
 };
 
 class maya_skl_translator: public MPxFileTranslator
@@ -640,6 +706,7 @@ MStatus maya_omf_reader::reader(const MFileObject& file, const MString& options,
 		xr_ogf_v4* omf = new xr_ogf_v4;
 		if (omf->load_omf(path.asChar()))
 		{
+			remember_omf_bone_order(*omf);
 			maya_import_tools imp_tools;
 			for (xr_skl_motion_vec_cit it = omf->motions().begin(),
 					end = omf->motions().end(); it != end; ++it)
@@ -976,6 +1043,8 @@ MStatus initializePlugin(MObject obj)
 		return status;
 	if (!(status = plugin_fn.registerFileTranslator(omf_reader, "", maya_omf_reader::creator, "", "", true)))
 		return status;
+	if (!(status = plugin_fn.registerFileTranslator(omf_writer, "", maya_omf_writer::creator, "xray_re_omf_export_options", "", true)))
+		return status;
 	if (!(status = plugin_fn.registerFileTranslator(skl_translator, "", maya_skl_translator::creator, "", "", true)))
 		return status;
 	if (!(status = plugin_fn.registerFileTranslator(skls_reader, "", maya_skls_reader::creator, "", "", true)))
@@ -1011,6 +1080,7 @@ MStatus uninitializePlugin(MObject obj)
 	plugin_fn.deregisterFileTranslator(ogf_reader);
 	plugin_fn.deregisterFileTranslator(ogf_writer);
 	plugin_fn.deregisterFileTranslator(omf_reader);
+	plugin_fn.deregisterFileTranslator(omf_writer);
 	plugin_fn.deregisterFileTranslator(skl_translator);
 	plugin_fn.deregisterFileTranslator(skls_reader);
 	plugin_fn.deregisterFileTranslator(anm_writer);

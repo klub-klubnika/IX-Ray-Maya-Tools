@@ -146,6 +146,47 @@ global proc int xray_re_ogf_export_options(string $parent, string $action, strin
 	return 1;
 }
 
+global proc int xray_re_omf_export_options(string $parent, string $action, string $options, string $callback)
+{
+	if ($action == "post") {
+		setParent $parent;
+		columnLayout -adj true;
+		text -label "Skeletal OMF: exports the current Maya timeline as one motion." -align "left";
+		int $precision = 8;
+		string $motionName = "";
+		if (`optionVar -exists "ixrayOmfPositionPrecision"`) $precision = `optionVar -q "ixrayOmfPositionPrecision"`;
+		if (`optionVar -exists "ixrayOmfMotionName"`) $motionName = `optionVar -q "ixrayOmfMotionName"`;
+		string $params[];
+		tokenize($options, ";", $params);
+		int $i;
+		for ($i = 0; $i < size($params); ++$i) {
+			string $kv[];
+			tokenize($params[$i], "=", $kv);
+			if (size($kv) >= 2 && $kv[0] == "omf_position_precision") $precision = (int)$kv[1];
+			if (size($kv) >= 2 && $kv[0] == "omf_motion_name") $motionName = $kv[1];
+		}
+		optionMenu -label "Position key precision" "ixrayOmfPositionPrecision";
+		menuItem -label "8 bit";
+		menuItem -label "16 bit";
+		menuItem -label "32 bit (float)";
+		optionMenu -edit -select (($precision == 16) ? 2 : (($precision == 32) ? 3 : 1)) "ixrayOmfPositionPrecision";
+		textFieldGrp -label "Motion name" -text $motionName "ixrayOmfMotionName";
+		text -label "Empty: use the OMF file name without extension." -align "left";
+	} else if ($action == "query") {
+		int $item = `optionMenu -q -select "ixrayOmfPositionPrecision"`;
+		int $precision = ($item == 2) ? 16 : (($item == 3) ? 32 : 8);
+		string $motionName = `textFieldGrp -q -text "ixrayOmfMotionName"`;
+		if (`gmatch $motionName "*\"*"` || `gmatch $motionName "*;*"` || `gmatch $motionName "*=*"`) {
+			error "Motion name cannot contain quotes, semicolons or equals signs.";
+			return 0;
+		}
+		optionVar -iv "ixrayOmfPositionPrecision" $precision;
+		optionVar -sv "ixrayOmfMotionName" $motionName;
+		eval($callback + " \"omf_position_precision=" + $precision + ";omf_motion_name=" + $motionName + ";\"");
+	}
+	return 1;
+}
+
 global proc int xray_re_object_export_options(string $parent, string $action, string $options, string $callback)
 {
 	string $sdk_ver_params[] = { "1850", "0.4", "0.6" };

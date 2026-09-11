@@ -18,6 +18,7 @@
 #include <maya/MFnSkinCluster.h>
 #include <maya/MFnTransform.h>
 #include <maya/MFnCharacter.h>
+#include <maya/MFnDependencyNode.h>
 #include <maya/MFnClip.h>
 #include <maya/MGlobal.h>
 #include <maya/MIntArray.h>
@@ -32,6 +33,7 @@
 #include <maya/MPointArray.h>
 #include <maya/MSelectionList.h>
 #include <maya/MMatrix.h>
+#include <maya/MQuaternion.h>
 #include <cctype>
 #include "maya_export_tools.h"
 #include "maya_bone_collision.h"
@@ -40,9 +42,118 @@
 #include "xr_envelope.h"
 #include "xr_utils.h"
 #include "xr_obj_motion.h"
+#include "xr_ogf_format.h"
+#include "xr_writer.h"
 #include "xr_sdk_version.h"
 
 using namespace xray_re;
+
+namespace {
+
+struct omf_quaternion_key { int16_t x, y, z, w; };
+struct omf_quaternion_key_32 { float x, y, z, w; };
+struct omf_translation_key_8 { int8_t x, y, z; };
+struct omf_translation_key_16 { int16_t x, y, z; };
+struct omf_translation_key_32 { float x, y, z; };
+struct omf_sample {
+	fvector3 translation;
+	MQuaternion rotation;
+};
+
+static int16_t quantize_rotation(double value)
+{
+	return static_cast<int16_t>(std::max(-32767.0, std::min(32767.0, value * 32767.0)));
+}
+
+static bool same_translation(const std::vector<omf_sample>& samples)
+{
+	for (size_t i = 1; i < samples.size(); ++i) {
+		const fvector3& a = samples[0].translation;
+		const fvector3& b = samples[i].translation;
+		if (std::fabs(a.x - b.x) > 1e-6f || std::fabs(a.y - b.y) > 1e-6f || std::fabs(a.z - b.z) > 1e-6f)
+			return false;
+	}
+	return true;
+}
+
+static bool same_rotation(const std::vector<omf_sample>& samples)
+{
+	for (size_t i = 1; i < samples.size(); ++i) {
+		const MQuaternion& a = samples[0].rotation;
+		const MQuaternion& b = samples[i].rotation;
+		if (std::fabs(a.x - b.x) > 1e-7 || std::fabs(a.y - b.y) > 1e-7 ||
+			std::fabs(a.z - b.z) > 1e-7 || std::fabs(a.w - b.w) > 1e-7)
+			return false;
+	}
+	return true;
+}
+
+static void write_omf_bone_keys(xr_writer& writer, const std::vector<omf_sample>& samples, unsigned precision)
+{
+	const bool translation_present = !same_translation(samples);
+	const bool rotation_present = !same_rotation(samples);
+	uint8_t flags = (translation_present ? KPF_T_PRESENT : 0) |
+		(rotation_present ? 0 : KPF_R_ABSENT);
+	if (precision == 16) flags |= KPF_T_HQ;
+	if (precision == 32) flags |= 0x08; // XrayExportTool's flTKeyFFT_Bit.
+	writer.w_u8(flags);
+
+	auto write_rotation = [&writer, precision](const MQuaternion& q) {
+		if (precision == 32) {
+			writer.w(omf_quaternion_key_32 { float(q.x), float(q.y), float(q.z), float(q.w) });
+		} else {
+			writer.w(omf_quaternion_key { quantize_rotation(q.x), quantize_rotation(q.y),
+				quantize_rotation(q.z), quantize_rotation(q.w) });
+		}
+	};
+	if (rotation_present) {
+		writer.w_u32(0); // CRC is advisory; game readers do not validate it.
+		for (const omf_sample& sample: samples) write_rotation(sample.rotation);
+	} else {
+		write_rotation(samples[0].rotation);
+	}
+
+	if (!translation_present) {
+		writer.w_fvector3(samples[0].translation);
+		return;
+	}
+
+	writer.w_u32(0);
+	if (precision == 32) {
+		for (const omf_sample& sample: samples)
+			writer.w(omf_translation_key_32 { sample.translation.x, sample.translation.y, sample.translation.z });
+		return;
+	}
+
+	fvector3 minimum = samples[0].translation;
+	fvector3 maximum = minimum;
+	for (const omf_sample& sample: samples) {
+		minimum.x = std::min(minimum.x, sample.translation.x); minimum.y = std::min(minimum.y, sample.translation.y); minimum.z = std::min(minimum.z, sample.translation.z);
+		maximum.x = std::max(maximum.x, sample.translation.x); maximum.y = std::max(maximum.y, sample.translation.y); maximum.z = std::max(maximum.z, sample.translation.z);
+	}
+	fvector3 center; center.add(minimum, maximum); center.mul(0.5f);
+	fvector3 extent; extent.sub(maximum, minimum); extent.mul(0.5f);
+	const float scale = precision == 16 ? 32767.f : 127.f;
+	auto quantize = [scale](float value, float c, float e) {
+		if (std::fabs(e) <= 1e-20f) return 0;
+		return std::max(-static_cast<int>(scale), std::min(static_cast<int>(scale), static_cast<int>(value * scale / e)));
+	};
+	for (const omf_sample& sample: samples) {
+		if (precision == 16) writer.w(omf_translation_key_16 {
+			static_cast<int16_t>(quantize(sample.translation.x - center.x, center.x, extent.x)),
+			static_cast<int16_t>(quantize(sample.translation.y - center.y, center.y, extent.y)),
+			static_cast<int16_t>(quantize(sample.translation.z - center.z, center.z, extent.z)) });
+		else writer.w(omf_translation_key_8 {
+			static_cast<int8_t>(quantize(sample.translation.x - center.x, center.x, extent.x)),
+			static_cast<int8_t>(quantize(sample.translation.y - center.y, center.y, extent.y)),
+			static_cast<int8_t>(quantize(sample.translation.z - center.z, center.z, extent.z)) });
+	}
+	extent.mul(1.f / scale);
+	writer.w_fvector3(extent);
+	writer.w_fvector3(center);
+}
+
+} // namespace
 
 std::string getRealName(MFnDependencyNode& n)
 {
@@ -89,6 +200,67 @@ static std::string normalize_omf_refs(std::string refs)
 		}
 	}
 	return result;
+}
+
+static bool imported_omf_bone_order(const MDagPathArray& joints, const std::vector<std::string>& bone_names,
+	std::vector<unsigned>& order, std::vector<uint32_t>& ids)
+{
+	auto decode = [&bone_names, &order, &ids](const MString& value) {
+		std::string encoded = value.asChar();
+		std::vector<unsigned> result;
+		for (size_t begin = 0; begin < encoded.size();) {
+			const size_t end = encoded.find('\n', begin);
+			const std::string name = encoded.substr(begin, end - begin);
+			if (!name.empty()) {
+				auto found = std::find(bone_names.begin(), bone_names.end(), name);
+				if (found == bone_names.end()) return false;
+				result.push_back(unsigned(found - bone_names.begin()));
+			}
+			if (end == std::string::npos) break;
+			begin = end + 1;
+		}
+		if (result.size() != bone_names.size()) return false;
+		order.swap(result);
+		ids.resize(order.size());
+		for (size_t i = 0; i != ids.size(); ++i) ids[i] = uint32_t(i);
+		return true;
+	};
+	auto decode_ids = [&bone_names, &order, &ids]() {
+		if (!MGlobal::optionVarExists("ixrayLastOmfBoneIds")) return;
+		const std::string encoded = MGlobal::optionVarStringValue("ixrayLastOmfBoneIds").asChar();
+		std::vector<std::pair<std::string, uint32_t>> stored;
+		for (size_t begin = 0; begin < encoded.size();) {
+			const size_t end = encoded.find('\n', begin);
+			const std::string line = encoded.substr(begin, end - begin);
+			const size_t tab = line.find('\t');
+			if (tab != std::string::npos) {
+				try { stored.push_back(std::make_pair(line.substr(0, tab), uint32_t(std::stoul(line.substr(tab + 1))))); }
+				catch (const std::exception&) { return; }
+			}
+			if (end == std::string::npos) break;
+			begin = end + 1;
+		}
+		if (stored.size() != bone_names.size()) return;
+		std::vector<uint32_t> result;
+		for (unsigned index: order) {
+			auto found = std::find_if(stored.begin(), stored.end(), [&bone_names, index](const std::pair<std::string, uint32_t>& item) { return item.first == bone_names[index]; });
+			if (found == stored.end()) return;
+			result.push_back(found->second);
+		}
+		ids.swap(result);
+	};
+	for (unsigned i = 0; i != joints.length(); ++i) {
+		MFnDependencyNode node(joints[i].node());
+		if (!node.hasAttribute("ixrayOmfBoneOrder")) continue;
+		MStatus status;
+		MString value = node.findPlug("ixrayOmfBoneOrder", true, &status).asString(&status);
+		if (!status || value.length() == 0) continue;
+		if (decode(value)) { decode_ids(); return true; }
+	}
+	if (!MGlobal::optionVarExists("ixrayLastOmfBoneOrder")) return false;
+	if (!decode(MGlobal::optionVarStringValue("ixrayLastOmfBoneOrder"))) return false;
+	decode_ids();
+	return true;
 }
 
 maya_export_tools::maya_export_tools(const MString& options)
@@ -1235,6 +1407,121 @@ MStatus maya_export_tools::export_skl(const char* path, bool selection_only)
 	return status;
 }
 
+MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
+{
+	if (!m_options_status) {
+		MGlobal::displayError("IX-Ray: invalid OMF options.");
+		return m_options_status;
+	}
+	MObject skin_obj;
+	MStatus status = find_mesh_and_skin(0, &skin_obj, selection_only);
+	if (!status) return status;
+
+	MFnSkinCluster skin_fn(skin_obj, &status);
+	if (!status) return status;
+	MDagPathArray joints;
+	skin_fn.influenceObjects(joints, &status);
+	if (!status || joints.length() == 0) {
+		MGlobal::displayError("IX-Ray: OMF export requires a skinCluster with joints.");
+		return MS::kFailure;
+	}
+	if (joints.length() > UINT16_MAX) {
+		MGlobal::displayError("IX-Ray: too many joints for OMF export.");
+		return MS::kFailure;
+	}
+
+	std::vector<std::string> bone_names(joints.length());
+	for (unsigned i = 0; i != joints.length(); ++i) {
+		MFnIkJoint joint(joints[i], &status);
+		if (!status) {
+			MGlobal::displayError("IX-Ray: OMF exporter found a non-joint influence.");
+			return status;
+		}
+		bone_names[i] = getRealName(joint);
+	}
+	// Match XrayExportTool: motion blocks and bone IDs both use the original
+	// skeletal object's global bone list.  A partition is only a grouping and
+	// must never change the order of key blocks.
+	std::vector<unsigned> bone_order(joints.length());
+	for (unsigned i = 0; i != joints.length(); ++i) bone_order[i] = i;
+
+	const MTime saved_time(MAnimControl::currentTime());
+	const MTime::Unit unit = MTime::uiUnit();
+	const int32_t frame_start = int32_t(MAnimControl::minTime().as(unit));
+	const int32_t frame_end = int32_t(MAnimControl::maxTime().as(unit));
+	if (frame_end < frame_start) return MS::kInvalidParameter;
+	const uint32_t frame_count = uint32_t(frame_end - frame_start + 1);
+	std::vector<std::vector<omf_sample>> samples(joints.length());
+	for (auto& bone_samples: samples) bone_samples.reserve(frame_count);
+
+	MTime time; time.setUnit(unit);
+	for (int32_t frame = frame_start; frame <= frame_end; ++frame) {
+		time.setValue(frame);
+		MGlobal::viewFrame(time);
+		for (unsigned i = 0; i != joints.length(); ++i) {
+			MFnIkJoint joint(joints[i], &status);
+			if (!status) { MAnimControl::setCurrentTime(saved_time); return status; }
+			MTransformationMatrix matrix = joint.transformationMatrix(&status);
+			if (!status) { MAnimControl::setCurrentTime(saved_time); return status; }
+			MVector translation = matrix.getTranslation(MSpace::kTransform, &status);
+			if (!status) { MAnimControl::setCurrentTime(saved_time); return status; }
+			// This is the inverse of the ZXY conversion used by the OMF importer.
+			// Keep it in Euler space: Maya jointOrient is represented through this
+			// rotation order rather than as a plain reflected world quaternion.
+			MEulerRotation rotation = matrix.eulerRotation();
+			rotation.reorderIt(MEulerRotation::kZXY);
+			MEulerRotation xray_rotation(-rotation.x, -rotation.y, rotation.z, MEulerRotation::kZXY);
+			MQuaternion xray_quaternion = xray_rotation.asQuaternion();
+			// Maya's local joint transform is the inverse of the OMF local rotation.
+			// The required OMF key is therefore the quaternion conjugate.
+			xray_quaternion.x = -xray_quaternion.x;
+			xray_quaternion.y = -xray_quaternion.y;
+			xray_quaternion.z = -xray_quaternion.z;
+			samples[i].push_back({ fvector3().set(
+				float(MDistance(translation.x, MDistance::kCentimeters).asMeters()),
+				float(MDistance(translation.y, MDistance::kCentimeters).asMeters()),
+				float(MDistance(-translation.z, MDistance::kCentimeters).asMeters())),
+				xray_quaternion });
+		}
+	}
+	MAnimControl::setCurrentTime(saved_time);
+
+	char motion_name[_MAX_FNAME];
+	_splitpath_s(path, NULL, 0, NULL, 0, motion_name, sizeof(motion_name), NULL, 0);
+	const std::string exported_motion_name = m_omf_motion_name.empty() ? motion_name : m_omf_motion_name;
+	xr_memory_writer writer;
+	writer.open_chunk(OGF4_S_MOTIONS);
+	writer.open_chunk(0); writer.w_u32(1); writer.close_chunk();
+	writer.open_chunk(1);
+	writer.w_sz(exported_motion_name);
+	writer.w_u32(frame_count);
+	for (unsigned index: bone_order) write_omf_bone_keys(writer, samples[index], m_omf_position_precision);
+	writer.close_chunk();
+	writer.close_chunk();
+
+	writer.open_chunk(OGF4_S_SMPARAMS);
+	writer.w_u16(OGF4_S_SMPARAMS_VERSION_4);
+	writer.w_u16(1);
+	writer.w_sz("default");
+	writer.w_size_u16(bone_names.size());
+	for (size_t i = 0; i != bone_order.size(); ++i) {
+		writer.w_sz(bone_names[bone_order[i]]);
+		writer.w_u32(uint32_t(i));
+	}
+	writer.w_u16(1);
+	writer.w_sz(exported_motion_name);
+	writer.w_u32(0); // cycle motion
+	writer.w_u16(ALL_PARTITIONS);
+	writer.w_u16(0);
+	writer.w_float(1.f); writer.w_float(1.f); writer.w_float(0.f); writer.w_float(0.f);
+	writer.w_u32(0); // marks
+	writer.close_chunk();
+
+	if (!writer.save_to(path)) return MS::kFailure;
+	MGlobal::displayInfo(MString("IX-Ray: exported OMF: ") + path);
+	return MS::kSuccess;
+}
+
 MStatus maya_export_tools::export_anm(const char *path, bool selection_only)
 {
 	MSelectionList s_list;
@@ -1314,6 +1601,8 @@ void maya_export_tools::set_default_options(void)
 	m_ogf_smoothing = ogf_smoothing::normals;
 	m_ogf_influences = 4;
 	m_ogf_motion_refs.clear();
+	m_omf_position_precision = 8;
+	m_omf_motion_name.clear();
 }
 
 MStatus maya_export_tools::parse_options(const MString& options)
@@ -1355,6 +1644,11 @@ MStatus maya_export_tools::parse_options(const MString& options)
 			m_ogf_influences = key_value[1].asInt();
 		}
 		else if (key_value[0] == "ogf_motion_refs") m_ogf_motion_refs = normalize_omf_refs(key_value[1].asChar());
+		else if (key_value[0] == "omf_position_precision") {
+			if (key_value[1] != "8" && key_value[1] != "16" && key_value[1] != "32") return MS::kInvalidParameter;
+			m_omf_position_precision = key_value[1].asInt();
+		}
+		else if (key_value[0] == "omf_motion_name") m_omf_motion_name = key_value[1].asChar();
 	}
 
 	return MS::kSuccess;

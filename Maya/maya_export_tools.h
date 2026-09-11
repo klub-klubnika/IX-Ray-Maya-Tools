@@ -34,6 +34,7 @@ public:
 	MStatus			export_skl_object(const char* path, bool selection_only = false);
 	MStatus export_ogf(const char* path, bool selection_only = false);
 	MStatus			export_skl(const char* path, bool selection_only = false);
+	MStatus			export_omf(const char* path, bool selection_only = false);
 	MStatus			export_anm(const char* path, bool selection_only = false);
 
 private:
@@ -57,6 +58,8 @@ private:
 	ogf_smoothing m_ogf_smoothing;
 	unsigned m_ogf_influences;
 	std::string m_ogf_motion_refs;
+	unsigned m_omf_position_precision;
+	std::string m_omf_motion_name;
 	MStatus m_options_status;
 };
 
