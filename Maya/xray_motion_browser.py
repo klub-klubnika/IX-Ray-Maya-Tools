@@ -60,10 +60,11 @@ def _load_paths(paths):
     for path in paths:
         path = os.path.normpath(os.path.abspath(path))
         if path.lower().endswith(EXTENSIONS):
-            for name in cmds.ixrayMotionList(path) or []:
+            for source_index, name in enumerate(cmds.ixrayMotionList(path) or []):
                 if not any(os.path.normcase(m["path"]) == os.path.normcase(path) and
-                           m["name"] == name for m in motions):
-                    motions.append(dict(path=path, name=name, scale=1.0, stretch=1.0, start=0.0))
+                           m["name"] == name and m.get("source_index", 0) == source_index for m in motions):
+                    motions.append(dict(path=path, name=name, source_index=source_index,
+                                        scale=1.0, stretch=1.0, start=0.0))
     _motions[:] = motions
     _save_library()
     _fill()
@@ -191,7 +192,8 @@ def load_selected(*_, play=False):
     try:
         cmds.select(target, replace=True)
         end = cmds.ixrayMotionLoad(path, name,
-                            "scale_factor={};time_stretch={};start_frame={}".format(*values))
+                            "scale_factor={};time_stretch={};start_frame={}".format(*values),
+                                 motion.get("source_index", 0))
         _remember_options()
     finally:
         try:
@@ -226,10 +228,12 @@ def extern_load(paths):
         path = os.path.normpath(os.path.abspath(path))
         if not path.lower().endswith(EXTENSIONS):
             continue
-        for name in cmds.ixrayMotionList(path) or []:
+        for source_index, name in enumerate(cmds.ixrayMotionList(path) or []):
             if not any(os.path.normcase(m.get("path", "")) == os.path.normcase(path) and
-                       m.get("name") == name for m in record if isinstance(m, dict)):
-                record.append(dict(path=path, name=name, scale=1.0, stretch=1.0, start=0.0))
+                       m.get("name") == name and m.get("source_index", 0) == source_index
+                       for m in record if isinstance(m, dict)):
+                record.append(dict(path=path, name=name, source_index=source_index,
+                                   scale=1.0, stretch=1.0, start=0.0))
     cmds.setAttr(root + "." + LIBRARY_ATTR, json.dumps(record, ensure_ascii=True), type="string")
     if not cmds.about(batch=True) and cmds.window(WINDOW, exists=True):
         _target = selected

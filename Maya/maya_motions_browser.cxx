@@ -217,6 +217,7 @@ MSyntax ixrayMotionLoad::syntax_creator()
 	syntax.addArg(MSyntax::kString);
 	syntax.addArg(MSyntax::kString);
 	syntax.addArg(MSyntax::kString);
+	syntax.addArg(MSyntax::kLong);
 	return syntax;
 }
 
@@ -226,11 +227,15 @@ MStatus ixrayMotionLoad::doIt(const MArgList& args)
 		return MS::kFailure;
 
 	MString path, motion_name, options;
+	int source_index = 0;
 	args.get(0, path);
 	if (args.length() > 1)
 		args.get(1, motion_name);
 	if (args.length() > 2)
 		args.get(2, options);
+	if (args.length() > 3)
+		args.get(3, source_index);
+	if (source_index < 0) return MS::kInvalidParameter;
 
 	maya_import_tools imp_tools(options);
 	double end_frame = 0;
@@ -248,10 +253,11 @@ MStatus ixrayMotionLoad::doIt(const MArgList& args)
 
 		std::vector<xr_skl_motion*> chosen;
 		const xr_skl_motion_vec& motions = object->motions();
-		for (xr_skl_motion_vec_cit it = motions.begin(), end = motions.end(); it != end; ++it)
+		unsigned index = 0;
+		for (xr_skl_motion_vec_cit it = motions.begin(), end = motions.end(); it != end; ++it, ++index)
 		{
 			xr_skl_motion* motion = *it;
-			if (motion_name.length() == 0 || motion->name() == motion_name.asChar())
+			if (motion_name.length() == 0 || (motion->name() == motion_name.asChar() && index == unsigned(source_index)))
 				chosen.push_back(motion);
 		}
 		if (chosen.empty())
@@ -277,9 +283,11 @@ MStatus ixrayMotionLoad::doIt(const MArgList& args)
 			return cant_open(path);
 		}
 		remember_omf_bone_order(*omf);
+		unsigned index = 0;
 		for (auto* motion : omf->motions())
 		{
-			if (motion->name() != motion_name.asChar()) continue;
+			if (motion->name() != motion_name.asChar()) { ++index; continue; }
+			if (index++ != unsigned(source_index)) continue;
 			status = imp_tools.import_selected_motion(motion, &end_frame);
 			break;
 		}

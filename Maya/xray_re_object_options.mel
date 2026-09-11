@@ -154,8 +154,16 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		text -label "Skeletal OMF: exports the current Maya timeline as one motion." -align "left";
 		int $precision = 8;
 		string $motionName = "";
+		float $speed = 1.0;
+		float $accrue = 2.0;
+		float $falloff = 2.0;
+		int $stopAtEnd = 0;
 		if (`optionVar -exists "ixrayOmfPositionPrecision"`) $precision = `optionVar -q "ixrayOmfPositionPrecision"`;
 		if (`optionVar -exists "ixrayOmfMotionName"`) $motionName = `optionVar -q "ixrayOmfMotionName"`;
+		if (`optionVar -exists "ixrayOmfSpeed"`) $speed = `optionVar -q "ixrayOmfSpeed"`;
+		if (`optionVar -exists "ixrayOmfAccrue"`) $accrue = `optionVar -q "ixrayOmfAccrue"`;
+		if (`optionVar -exists "ixrayOmfFalloff"`) $falloff = `optionVar -q "ixrayOmfFalloff"`;
+		if (`optionVar -exists "ixrayOmfStopAtEnd"`) $stopAtEnd = `optionVar -q "ixrayOmfStopAtEnd"`;
 		string $params[];
 		tokenize($options, ";", $params);
 		int $i;
@@ -164,6 +172,10 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 			tokenize($params[$i], "=", $kv);
 			if (size($kv) >= 2 && $kv[0] == "omf_position_precision") $precision = (int)$kv[1];
 			if (size($kv) >= 2 && $kv[0] == "omf_motion_name") $motionName = $kv[1];
+			if (size($kv) >= 2 && $kv[0] == "omf_speed") $speed = (float)$kv[1];
+			if (size($kv) >= 2 && $kv[0] == "omf_accrue") $accrue = (float)$kv[1];
+			if (size($kv) >= 2 && $kv[0] == "omf_falloff") $falloff = (float)$kv[1];
+			if (size($kv) >= 2 && $kv[0] == "omf_stop_at_end") $stopAtEnd = ($kv[1] == "true");
 		}
 		optionMenu -label "Position key precision" "ixrayOmfPositionPrecision";
 		menuItem -label "8 bit";
@@ -172,17 +184,29 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		optionMenu -edit -select (($precision == 16) ? 2 : (($precision == 32) ? 3 : 1)) "ixrayOmfPositionPrecision";
 		textFieldGrp -label "Motion name" -text $motionName "ixrayOmfMotionName";
 		text -label "Empty: use the OMF file name without extension." -align "left";
+		floatFieldGrp -numberOfFields 1 -label "Speed" -value1 $speed "ixrayOmfSpeed";
+		floatFieldGrp -numberOfFields 1 -label "Accrue" -value1 $accrue "ixrayOmfAccrue";
+		floatFieldGrp -numberOfFields 1 -label "Falloff" -value1 $falloff "ixrayOmfFalloff";
+		checkBox -label "Stop at end" -value $stopAtEnd "ixrayOmfStopAtEnd";
 	} else if ($action == "query") {
 		int $item = `optionMenu -q -select "ixrayOmfPositionPrecision"`;
 		int $precision = ($item == 2) ? 16 : (($item == 3) ? 32 : 8);
 		string $motionName = `textFieldGrp -q -text "ixrayOmfMotionName"`;
+		float $speed = `floatFieldGrp -q -value1 "ixrayOmfSpeed"`;
+		float $accrue = `floatFieldGrp -q -value1 "ixrayOmfAccrue"`;
+		float $falloff = `floatFieldGrp -q -value1 "ixrayOmfFalloff"`;
+		int $stopAtEnd = `checkBox -q -value "ixrayOmfStopAtEnd"`;
 		if (`gmatch $motionName "*\"*"` || `gmatch $motionName "*;*"` || `gmatch $motionName "*=*"`) {
 			error "Motion name cannot contain quotes, semicolons or equals signs.";
 			return 0;
 		}
 		optionVar -iv "ixrayOmfPositionPrecision" $precision;
 		optionVar -sv "ixrayOmfMotionName" $motionName;
-		eval($callback + " \"omf_position_precision=" + $precision + ";omf_motion_name=" + $motionName + ";\"");
+		optionVar -fv "ixrayOmfSpeed" $speed;
+		optionVar -fv "ixrayOmfAccrue" $accrue;
+		optionVar -fv "ixrayOmfFalloff" $falloff;
+		optionVar -iv "ixrayOmfStopAtEnd" $stopAtEnd;
+		eval($callback + " \"omf_position_precision=" + $precision + ";omf_motion_name=" + $motionName + ";omf_speed=" + $speed + ";omf_accrue=" + $accrue + ";omf_falloff=" + $falloff + ";omf_stop_at_end=" + ($stopAtEnd ? "true" : "false") + ";\"");
 	}
 	return 1;
 }

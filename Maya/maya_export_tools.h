@@ -60,6 +60,10 @@ private:
 	std::string m_ogf_motion_refs;
 	unsigned m_omf_position_precision;
 	std::string m_omf_motion_name;
+	float m_omf_speed;
+	float m_omf_accrue;
+	float m_omf_falloff;
+	bool m_omf_stop_at_end;
 	MStatus m_options_status;
 };
 

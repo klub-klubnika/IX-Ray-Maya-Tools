@@ -1510,10 +1510,10 @@ MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
 	}
 	writer.w_u16(1);
 	writer.w_sz(exported_motion_name);
-	writer.w_u32(0); // cycle motion
+	writer.w_u32(m_omf_stop_at_end ? 0x2u : 0u);
 	writer.w_u16(ALL_PARTITIONS);
 	writer.w_u16(0);
-	writer.w_float(1.f); writer.w_float(1.f); writer.w_float(0.f); writer.w_float(0.f);
+	writer.w_float(m_omf_speed); writer.w_float(1.f); writer.w_float(m_omf_accrue); writer.w_float(m_omf_falloff);
 	writer.w_u32(0); // marks
 	writer.close_chunk();
 
@@ -1603,6 +1603,10 @@ void maya_export_tools::set_default_options(void)
 	m_ogf_motion_refs.clear();
 	m_omf_position_precision = 8;
 	m_omf_motion_name.clear();
+	m_omf_speed = 1.f;
+	m_omf_accrue = 2.f;
+	m_omf_falloff = 2.f;
+	m_omf_stop_at_end = false;
 }
 
 MStatus maya_export_tools::parse_options(const MString& options)
@@ -1649,6 +1653,10 @@ MStatus maya_export_tools::parse_options(const MString& options)
 			m_omf_position_precision = key_value[1].asInt();
 		}
 		else if (key_value[0] == "omf_motion_name") m_omf_motion_name = key_value[1].asChar();
+		else if (key_value[0] == "omf_speed") m_omf_speed = key_value[1].asFloat();
+		else if (key_value[0] == "omf_accrue") m_omf_accrue = key_value[1].asFloat();
+		else if (key_value[0] == "omf_falloff") m_omf_falloff = key_value[1].asFloat();
+		else if (key_value[0] == "omf_stop_at_end") m_omf_stop_at_end = key_value[1] == "true";
 	}
 
 	return MS::kSuccess;
