@@ -29,6 +29,19 @@ fvector3 unit(fvector3 v)
     return v.normalize();
 }
 
+bool triangle_normal(const xr_mesh& mesh, const lw_face& face, fvector3& normal)
+{
+    const auto& points = mesh.points();
+    const fvector3& a = points.at(face.v[0]);
+    const fvector3& b = points.at(face.v[1]);
+    const fvector3& c = points.at(face.v[2]);
+    if (!finite(a) || !finite(b) || !finite(c)) return false;
+    normal.calc_normal_non_normalized(a, b, c);
+    if (!finite(normal) || normal.square_magnitude() <= 1e-20f) return false;
+    normal.normalize();
+    return true;
+}
+
 struct corner_sets {
     std::vector<size_t> parent;
     explicit corner_sets(size_t size): parent(size) { for (size_t i = 0; i < size; ++i) parent[i] = i; }
@@ -43,7 +56,18 @@ std::vector<fvector3> normals(const xr_mesh& mesh, ogf_smoothing mode)
         // Maya's existing extractor writes three normals per triangle into vnorm.
         require(mesh.vnorm().size() == faces.size() * 3, "Missing Maya face-vertex normals.");
         auto result = mesh.vnorm();
-        for (auto& n: result) n = unit(n);
+        for (size_t f = 0; f < faces.size(); ++f) {
+            fvector3 fallback;
+            const bool has_fallback = triangle_normal(mesh, faces[f], fallback);
+            for (size_t c = 0; c < 3; ++c) {
+                auto& n = result[f * 3 + c];
+                // Some otherwise valid Maya scenes contain zero custom normals.
+                // Rebuild those from the face instead of rejecting the whole model.
+                if (!finite(n) || n.square_magnitude() <= 1e-20f)
+                    n = has_fallback ? fallback : fvector3().set(0.f, 0.f, 1.f);
+                else n.normalize();
+            }
+        }
         return result;
     }
     require(mesh.sgroups().size() == faces.size(), "Missing smoothing groups.");
@@ -82,11 +106,15 @@ std::vector<fvector3> normals(const xr_mesh& mesh, ogf_smoothing mode)
     for (size_t f = 0; f < faces.size(); ++f) {
         const auto& face = faces[f];
         fvector3 n;
-        n.calc_normal_non_normalized(mesh.points().at(face.v[0]), mesh.points().at(face.v[1]), mesh.points().at(face.v[2]));
-        n = unit(n);
+        // Degenerate faces are ignored by the writer below, so they must not
+        // poison normal accumulation for the remaining geometry.
+        if (!triangle_normal(mesh, face, n)) continue;
         for (size_t c = 0; c < 3; ++c) sums[sets.root(f * 3 + c)].add(n);
     }
-    for (size_t i = 0; i < result.size(); ++i) result[i] = unit(sums[sets.root(i)]);
+    for (size_t i = 0; i < result.size(); ++i) {
+        auto& n = sums[sets.root(i)];
+        result[i] = finite(n) && n.square_magnitude() > 1e-20f ? n.normalize() : fvector3().set(0.f, 0.f, 1.f);
+    }
     return result;
 }
 
@@ -95,6 +123,7 @@ struct vertex {
     fvector2 uv;
     std::array<uint16_t, 4> bones{};
     std::array<float, 4> weights{};
+    uint8_t influence_count = 1;
 };
 // Position, normal, UV, weights and tangent handedness all delimit seams.
 using vertex_key = std::pair<std::array<float, 13>, std::array<uint16_t, 4>>;
@@ -110,6 +139,7 @@ struct part {
     std::vector<uint16_t> indices;
     std::map<vertex_key, uint16_t> lookup;
     fbox bounds;
+    unsigned influence_count = 1;
     part() { bounds.invalidate(); }
 };
 
@@ -130,8 +160,15 @@ void write_part(xr_writer& w, part& p, unsigned limit)
     w.open_chunk(OGF4_TEXTURE);
     w.w_sz(p.surface->texture()); w.w_sz(p.surface->eshader()); w.close_chunk();
     w.open_chunk(OGF4_VERTICES);
-    // Legacy 2W works in SoC as well as CS/CoP; 4W is the CS/CoP layout.
-    w.w_u32(limit == 2 ? OGF4_VERTEXFORMAT_FVF_2L : OGF4_VERTEXFORMAT_FVF_4L_CS);
+    const unsigned links = std::min(p.influence_count, limit);
+    // X-Ray chooses a layout per material split.  In particular, rigid weapon
+    // parts still use the compact 1L layout when the export limit is 4.
+    if (limit == 2)
+        w.w_u32(links == 1 ? OGF4_VERTEXFORMAT_FVF_1L : OGF4_VERTEXFORMAT_FVF_2L);
+    else
+        w.w_u32(links == 1 ? OGF4_VERTEXFORMAT_FVF_1L_CS :
+            links == 2 ? OGF4_VERTEXFORMAT_FVF_2L_CS :
+            links == 3 ? OGF4_VERTEXFORMAT_FVF_3L_CS : OGF4_VERTEXFORMAT_FVF_4L_CS);
     w.w_size_u32(p.vertices.size());
     for (auto& v: p.vertices) {
         fvector3 projected; projected.mul(v.n, v.n.dot_product(v.t));
@@ -143,11 +180,16 @@ void write_part(xr_writer& w, part& p, unsigned limit)
         v.t = unit(v.t);
         fvector3 b; b.cross_product(v.n, v.t);
         if (b.dot_product(v.b) < 0) b.mul(-1.f);
-        for (unsigned i = 0; i < limit; ++i) w.w_u16(v.bones[i]);
-        w.w_fvector3(v.p); w.w_fvector3(v.n); w.w_fvector3(v.t); w.w_fvector3(b);
-        if (limit == 2) w.w_float(v.weights[1]);
-        else for (unsigned i = 0; i < 3; ++i) w.w_float(v.weights[i]);
-        w.w_fvector2(v.uv);
+        if (links == 1) {
+            w.w_fvector3(v.p); w.w_fvector3(v.n); w.w_fvector3(v.t); w.w_fvector3(b);
+            w.w_fvector2(v.uv); w.w_u32(v.bones[0]);
+        } else {
+            for (unsigned i = 0; i < links; ++i) w.w_u16(v.bones[i]);
+            w.w_fvector3(v.p); w.w_fvector3(v.n); w.w_fvector3(v.t); w.w_fvector3(b);
+            if (links == 2) w.w_float(v.weights[1]);
+            else for (unsigned i = 0; i + 1 < links; ++i) w.w_float(v.weights[i]);
+            w.w_fvector2(v.uv);
+        }
     }
     w.close_chunk();
     w.open_chunk(OGF4_INDICES); w.w_size_u32(p.indices.size()); w.w_seq(p.indices); w.close_chunk();
@@ -195,6 +237,11 @@ bool save_skeletal_ogf(xr_object& object, const char* path, ogf_smoothing smooth
                 parts.emplace_back(); parts.back().surface = sm->surface;
                 for (uint32_t f: sm->faces) {
                     const auto& face = mesh->faces().at(f);
+                    fvector3 geometric;
+                    // A zero-area triangle cannot have a tangent basis. The
+                    // legacy .object pipeline tolerates these, so omit only
+                    // that triangle rather than rejecting the entire weapon.
+                    if (!triangle_normal(*mesh, face, geometric)) continue;
                     vertex tri[3];
                     for (size_t c = 0; c < 3; ++c) {
                         auto& v = tri[c]; v.p = mesh->points().at(face.v[c]); v.n = ns.at(f * 3 + c);
@@ -218,6 +265,7 @@ bool save_skeletal_ogf(xr_object& object, const char* path, ogf_smoothing smooth
                         std::sort(weights.begin(), weights.end(), std::greater<std::pair<float, uint16_t>>());
                         if (weights.size() > influence_limit) weights.resize(influence_limit);
                         float total = 0; for (const auto& weight: weights) total += weight.first;
+                        v.influence_count = uint8_t(weights.size());
                         v.bones.fill(weights.front().second);
                         for (size_t i = 0; i < weights.size(); ++i) {
                             v.bones[i] = weights[i].second; v.weights[i] = weights[i].first / total;
@@ -230,9 +278,8 @@ bool save_skeletal_ogf(xr_object& object, const char* path, ogf_smoothing smooth
                             bone_bounds[v.bones[i]].extend(local); bone_used[v.bones[i]] = true;
                         }
                     }
-                    fvector3 e1, e2, t, b, geometric;
+                    fvector3 e1, e2, t, b;
                     e1.sub(tri[1].p, tri[0].p); e2.sub(tri[2].p, tri[0].p);
-                    geometric.cross_product(e1, e2); unit(geometric);
                     float u1 = tri[1].uv.x-tri[0].uv.x, v1 = tri[1].uv.y-tri[0].uv.y;
                     float u2 = tri[2].uv.x-tri[0].uv.x, v2 = tri[2].uv.y-tri[0].uv.y;
                     float det = u1*v2-u2*v1;
@@ -253,7 +300,8 @@ bool save_skeletal_ogf(xr_object& object, const char* path, ogf_smoothing smooth
                             auto k = key(v, cross.dot_product(b) < 0 ? -1.f : 1.f);
                             auto inserted = p.lookup.emplace(k, uint16_t(p.vertices.size()));
                             if (inserted.second) {
-                                v.t = t; v.b = b; p.vertices.push_back(v); p.bounds.extend(v.p); bounds.extend(v.p);
+                                v.t = t; v.b = b; p.influence_count = std::max(p.influence_count, unsigned(v.influence_count));
+                                p.vertices.push_back(v); p.bounds.extend(v.p); bounds.extend(v.p);
                             } else { auto& existing = p.vertices[inserted.first->second]; existing.t.add(t); existing.b.add(b); }
                             p.indices.push_back(inserted.first->second);
                         }
@@ -288,7 +336,22 @@ bool save_skeletal_ogf(xr_object& object, const char* path, ogf_smoothing smooth
             w.w_float(bone->mass()); w.w_fvector3(bone->center_of_mass());
         }
         w.close_chunk();
-        if (!motion_refs.empty()) w.w_chunk(OGF4_S_MOTION_REFS_0, motion_refs);
+        if (!motion_refs.empty()) {
+            if (influence_limit == 2) w.w_chunk(OGF4_S_MOTION_REFS_0, motion_refs);
+            else {
+                w.open_chunk(OGF4_S_MOTION_REFS_1);
+                size_t begin = 0, count = 1;
+                for (char c: motion_refs) if (c == ',') ++count;
+                w.w_size_u32(count);
+                for (;;) {
+                    const size_t end = motion_refs.find(',', begin);
+                    w.w_sz(motion_refs.substr(begin, end - begin));
+                    if (end == std::string::npos) break;
+                    begin = end + 1;
+                }
+                w.close_chunk();
+            }
+        }
         require(w.save_to(path), "Cannot write OGF file.");
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
