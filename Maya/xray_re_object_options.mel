@@ -104,7 +104,7 @@ global proc int xray_re_ogf_export_options(string $parent, string $action, strin
 		int $influences = 4;
 		if (`optionVar -exists "ixrayOgfSmoothing"`) $mode = `optionVar -q "ixrayOgfSmoothing"`;
 		if (`optionVar -exists "ixrayOgfInfluences"`) $influences = `optionVar -q "ixrayOgfInfluences"`;
-		string $refs = "";
+		string $refs = `ixrayOmfSceneValue "ixrayOgfMotionRefs" ""`;
 		string $params[];
 		tokenize($options, ";", $params);
 		for ($i = 0; $i < size($params); ++$i) {
@@ -113,7 +113,9 @@ global proc int xray_re_ogf_export_options(string $parent, string $action, strin
 			if (size($kv) < 2) continue;
 			if ($kv[0] == "ogf_smoothing") $mode = $kv[1];
 			if ($kv[0] == "ogf_influences") $influences = (int)$kv[1];
-			if ($kv[0] == "ogf_motion_refs") $refs = $kv[1];
+			// Scene metadata is authoritative.  The translator can pass an empty
+			// transient value here when reopening its option dialog.
+			if ($kv[0] == "ogf_motion_refs" && $refs == "") $refs = $kv[1];
 		}
 		radioCollection -edit -select "ixrayOgf_normals" "ixrayOgfSmoothing";
 		for ($i = 0; $i < 3; ++$i)
@@ -123,7 +125,7 @@ global proc int xray_re_ogf_export_options(string $parent, string $action, strin
 		menuItem -label "4 (CS / CoP / IX-Ray)";
 		optionMenu -edit -select (($influences == 2) ? 1 : 2) "ixrayOgfInfluences";
 		text -label "Keeps strongest weights and normalizes them." -align "left";
-		textFieldGrp -label "OMF references" -text $refs "ixrayOgfMotionRefs";
+		textFieldGrp -label "OMF references" -text $refs -changeCommand "ixrayOgfSaveMotionRefs" -textChangedCommand "ixrayOgfSaveMotionRefs" "ixrayOgfMotionRefs";
 		text -label "Paths relative to meshes, without .omf; separate with commas." -align "left";
 		text -label "Empty: skeleton without animations. Motions are not embedded." -align "left";
 	} else if ($action == "query") {
@@ -140,12 +142,199 @@ global proc int xray_re_ogf_export_options(string $parent, string $action, strin
 		}
 		optionVar -sv "ixrayOgfSmoothing" $mode;
 		optionVar -iv "ixrayOgfInfluences" $influences;
+		fileInfo "ixrayOgfMotionRefs" $refs;
 		$options = "ogf_smoothing=" + $mode + ";ogf_influences=" + $influences + ";ogf_motion_refs=" + $refs + ";";
 		eval($callback + " \"" + $options + "\"");
 	}
 	return 1;
 }
 
+global proc string ixrayOmfSceneValue(string $key, string $fallback) { string $v[] = `fileInfo -q $key`; return size($v) ? $v[0] : $fallback; }
+
+global proc ixrayOgfSaveMotionRefs() {
+	if (!`control -exists ixrayOgfMotionRefs`) return;
+	string $refs = `textFieldGrp -q -text ixrayOgfMotionRefs`;
+	$refs = substituteAllString($refs, "\\", "/");
+	fileInfo "ixrayOgfMotionRefs" $refs;
+}
+
+global int $gIxrayOmfSelectedMark = -1;
+global int $gIxrayOmfSelectedMarkParam = -1;
+
+global proc float ixrayOmfMarkLastKey() {
+	float $first = `playbackOptions -q -minTime`;
+	float $last = `playbackOptions -q -maxTime`;
+	return $last - $first + 1.0;
+}
+
+global proc ixrayOmfSaveSceneSettings() {
+	if (!`control -exists ixrayOmfPositionPrecision`) return;
+	int $item = `optionMenu -q -select ixrayOmfPositionPrecision`;
+	int $precision = ($item == 2) ? 16 : (($item == 3) ? 32 : 8);
+	string $motionName = `textFieldGrp -q -text ixrayOmfMotionName`;
+	float $speed = `floatFieldGrp -q -value1 ixrayOmfSpeed`;
+	float $accrue = `floatFieldGrp -q -value1 ixrayOmfAccrue`;
+	float $falloff = `floatFieldGrp -q -value1 ixrayOmfFalloff`;
+	int $stopAtEnd = `checkBox -q -value ixrayOmfStopAtEnd`;
+	int $hasMotionMarks = `checkBox -q -value ixrayOmfHasMotionMarks`;
+	string $marks = `textField -q -text ixrayOmfMarksData`;
+	fileInfo "ixrayOmfPositionPrecision" $precision;
+	fileInfo "ixrayOmfMotionName" $motionName;
+	fileInfo "ixrayOmfSpeed" $speed;
+	fileInfo "ixrayOmfAccrue" $accrue;
+	fileInfo "ixrayOmfFalloff" $falloff;
+	fileInfo "ixrayOmfStopAtEnd" $stopAtEnd;
+	fileInfo "ixrayOmfHasMotionMarks" $hasMotionMarks;
+	fileInfo "ixrayOmfMarks" $marks;
+}
+
+global proc ixrayOmfMarksEnabledChanged() {
+	int $enabled = `checkBox -q -value ixrayOmfHasMotionMarks`;
+	frameLayout -e -enable $enabled ixrayOmfMarksFrame;
+	ixrayOmfSaveSceneSettings;
+}
+
+global proc ixrayOmfMarksRefresh() {
+	global int $gIxrayOmfSelectedMark;
+	string $raw = `textField -q -text ixrayOmfMarksData`;
+	textScrollList -e -removeAll ixrayOmfMarksList;
+	string $items[]; tokenize($raw, ",", $items);
+	for ($item in $items) { string $parts[]; tokenize($item, ":", $parts); if (size($parts) >= 1) textScrollList -e -append $parts[0] ixrayOmfMarksList; }
+	if ($gIxrayOmfSelectedMark >= size($items)) $gIxrayOmfSelectedMark = -1;
+	if ($gIxrayOmfSelectedMark >= 0) textScrollList -e -selectIndexedItem ($gIxrayOmfSelectedMark + 1) ixrayOmfMarksList;
+}
+
+global proc ixrayOmfMarkParamsRefresh() {
+	global int $gIxrayOmfSelectedMark;
+	global int $gIxrayOmfSelectedMarkParam;
+	textScrollList -e -removeAll ixrayOmfMarkParamsList;
+	textScrollList -e -enable ($gIxrayOmfSelectedMark >= 0) ixrayOmfMarkParamsList;
+	button -e -enable ($gIxrayOmfSelectedMark >= 0) ixrayOmfMarkParamAdd;
+	button -e -enable ($gIxrayOmfSelectedMark >= 0 && $gIxrayOmfSelectedMarkParam >= 0) ixrayOmfMarkParamDelete;
+	floatField -e -enable ($gIxrayOmfSelectedMark >= 0 && $gIxrayOmfSelectedMarkParam >= 0) ixrayOmfMarkStart;
+	floatField -e -enable false ixrayOmfMarkEnd;
+	if ($gIxrayOmfSelectedMark < 0) return;
+	string $raw = `textField -q -text ixrayOmfMarksData`;
+	string $items[]; tokenize($raw, ",", $items);
+	if ($gIxrayOmfSelectedMark >= size($items)) return;
+	string $parts[]; tokenize($items[$gIxrayOmfSelectedMark], ":", $parts);
+	if (size($parts) < 2) return;
+	string $intervals[]; tokenize($parts[1], "|", $intervals);
+	int $i;
+	for ($i = 0; $i < size($intervals); ++$i) textScrollList -e -append ($gIxrayOmfSelectedMark + "_mark" + $i) ixrayOmfMarkParamsList;
+	if ($gIxrayOmfSelectedMarkParam >= size($intervals)) $gIxrayOmfSelectedMarkParam = -1;
+	if ($gIxrayOmfSelectedMarkParam >= 0) textScrollList -e -selectIndexedItem ($gIxrayOmfSelectedMarkParam + 1) ixrayOmfMarkParamsList;
+}
+
+global proc ixrayOmfMarksSelect() {
+	global int $gIxrayOmfSelectedMark;
+	global int $gIxrayOmfSelectedMarkParam;
+	int $selected[] = `textScrollList -q -selectIndexedItem ixrayOmfMarksList`;
+	$gIxrayOmfSelectedMark = size($selected) ? $selected[0] - 1 : -1;
+	$gIxrayOmfSelectedMarkParam = -1;
+	ixrayOmfMarkParamsRefresh;
+}
+
+global proc ixrayOmfMarkParamsSelect() {
+	global int $gIxrayOmfSelectedMark;
+	global int $gIxrayOmfSelectedMarkParam;
+	int $selected[] = `textScrollList -q -selectIndexedItem ixrayOmfMarkParamsList`;
+	$gIxrayOmfSelectedMarkParam = size($selected) ? $selected[0] - 1 : -1;
+	ixrayOmfMarkParamsRefresh;
+	if ($gIxrayOmfSelectedMark < 0 || $gIxrayOmfSelectedMarkParam < 0) return;
+	string $raw = `textField -q -text ixrayOmfMarksData`;
+	string $groups[]; tokenize($raw, ",", $groups);
+	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], ":", $parts);
+	string $intervals[]; tokenize($parts[1], "|", $intervals);
+	string $values[]; tokenize($intervals[$gIxrayOmfSelectedMarkParam], ":", $values);
+	if (size($values) == 2) {
+		float $start = (float)$values[0] * 30.0;
+		float $end = ixrayOmfMarkLastKey();
+		floatField -e -value $start ixrayOmfMarkStart;
+		floatField -e -value $end ixrayOmfMarkEnd;
+	}
+}
+
+global proc ixrayOmfMarkParamStore() {
+	global int $gIxrayOmfSelectedMark;
+	global int $gIxrayOmfSelectedMarkParam;
+	if ($gIxrayOmfSelectedMark < 0 || $gIxrayOmfSelectedMarkParam < 0) return;
+	float $start = `floatField -q -value ixrayOmfMarkStart`;
+	float $end = `floatField -q -value ixrayOmfMarkEnd`;
+	$end = ixrayOmfMarkLastKey();
+	if ($end < $start) { warning "Motion mark start must not be later than the last scene key."; return; }
+	$start /= 30.0;
+	$end /= 30.0;
+	string $raw = `textField -q -text ixrayOmfMarksData`;
+	string $groups[]; tokenize($raw, ",", $groups);
+	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], ":", $parts);
+	string $intervals[]; tokenize($parts[1], "|", $intervals);
+	$intervals[$gIxrayOmfSelectedMarkParam] = $start + ":" + $end;
+	string $newIntervals = ""; int $i;
+	for ($i = 0; $i < size($intervals); ++$i) $newIntervals = ($newIntervals == "" ? $intervals[$i] : $newIntervals + "|" + $intervals[$i]);
+	$groups[$gIxrayOmfSelectedMark] = $parts[0] + ":" + $newIntervals;
+	string $output = "";
+	for ($i = 0; $i < size($groups); ++$i) $output = ($output == "" ? $groups[$i] : $output + "," + $groups[$i]);
+	textField -e -text $output ixrayOmfMarksData;
+	ixrayOmfSaveSceneSettings;
+}
+
+global proc ixrayOmfMarksAdd() {
+	global int $gIxrayOmfSelectedMark;
+	global int $gIxrayOmfSelectedMarkParam;
+	string $result = `confirmDialog -title "Add motion mark" -message "Select mark type" -button "left" -button "left2" -button "right" -button "right2" -button "mm_unpend" -button "Cancel" -defaultButton "left" -cancelButton "Cancel" -dismissString "Cancel"`;
+	if ($result != "Cancel") { string $old = `textField -q -text ixrayOmfMarksData`; textField -e -text ($old == "" ? $result : ($old + "," + $result)) ixrayOmfMarksData; $gIxrayOmfSelectedMark = size(`textScrollList -q -allItems ixrayOmfMarksList`); $gIxrayOmfSelectedMarkParam = -1; ixrayOmfMarksRefresh; ixrayOmfMarkParamsRefresh; ixrayOmfSaveSceneSettings; }
+}
+global proc ixrayOmfMarksDelete() {
+	global int $gIxrayOmfSelectedMark;
+	global int $gIxrayOmfSelectedMarkParam;
+	int $selected[] = `textScrollList -q -selectIndexedItem ixrayOmfMarksList`;
+	if (size($selected)) $gIxrayOmfSelectedMark = $selected[0] - 1;
+	if ($gIxrayOmfSelectedMark < 0) return;
+	string $raw = `textField -q -text ixrayOmfMarksData`;
+	string $groups[]; tokenize($raw, ",", $groups);
+	string $result = ""; int $i;
+	for ($i = 0; $i < size($groups); ++$i) if ($i != $gIxrayOmfSelectedMark) $result = ($result == "" ? $groups[$i] : $result + "," + $groups[$i]);
+	textField -e -text $result ixrayOmfMarksData; $gIxrayOmfSelectedMark = -1; $gIxrayOmfSelectedMarkParam = -1; ixrayOmfMarksRefresh; ixrayOmfMarkParamsRefresh; ixrayOmfSaveSceneSettings;
+}
+
+global proc ixrayOmfMarkParamAdd() {
+	global int $gIxrayOmfSelectedMark;
+	global int $gIxrayOmfSelectedMarkParam;
+	int $selected[] = `textScrollList -q -selectIndexedItem ixrayOmfMarksList`;
+	if (size($selected)) $gIxrayOmfSelectedMark = $selected[0] - 1;
+	if ($gIxrayOmfSelectedMark < 0) return;
+	string $raw = `textField -q -text ixrayOmfMarksData`;
+	string $groups[]; tokenize($raw, ",", $groups);
+	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], ":", $parts);
+	string $intervals = size($parts) > 1 ? $parts[1] : "";
+	float $end = ixrayOmfMarkLastKey() / 30.0;
+	$intervals = ($intervals == "" ? "0:" + $end : $intervals + "|0:" + $end);
+	$groups[$gIxrayOmfSelectedMark] = $parts[0] + ":" + $intervals;
+	string $output = ""; int $i;
+	for ($i = 0; $i < size($groups); ++$i) $output = ($output == "" ? $groups[$i] : $output + "," + $groups[$i]);
+	textField -e -text $output ixrayOmfMarksData; $gIxrayOmfSelectedMarkParam = size(`textScrollList -q -allItems ixrayOmfMarkParamsList`); ixrayOmfMarkParamsRefresh; ixrayOmfMarkParamsSelect; ixrayOmfSaveSceneSettings;
+}
+
+global proc ixrayOmfMarkParamDelete() {
+	global int $gIxrayOmfSelectedMark;
+	global int $gIxrayOmfSelectedMarkParam;
+	int $selectedMark[] = `textScrollList -q -selectIndexedItem ixrayOmfMarksList`;
+	int $selectedParam[] = `textScrollList -q -selectIndexedItem ixrayOmfMarkParamsList`;
+	if (size($selectedMark)) $gIxrayOmfSelectedMark = $selectedMark[0] - 1;
+	if (size($selectedParam)) $gIxrayOmfSelectedMarkParam = $selectedParam[0] - 1;
+	if ($gIxrayOmfSelectedMark < 0 || $gIxrayOmfSelectedMarkParam < 0) return;
+	string $raw = `textField -q -text ixrayOmfMarksData`;
+	string $groups[]; tokenize($raw, ",", $groups);
+	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], ":", $parts);
+	string $intervals[]; tokenize($parts[1], "|", $intervals);
+	string $newIntervals = ""; int $i;
+	for ($i = 0; $i < size($intervals); ++$i) if ($i != $gIxrayOmfSelectedMarkParam) $newIntervals = ($newIntervals == "" ? $intervals[$i] : $newIntervals + "|" + $intervals[$i]);
+	$groups[$gIxrayOmfSelectedMark] = $parts[0] + ":" + $newIntervals;
+	string $output = "";
+	for ($i = 0; $i < size($groups); ++$i) $output = ($output == "" ? $groups[$i] : $output + "," + $groups[$i]);
+	textField -e -text $output ixrayOmfMarksData; $gIxrayOmfSelectedMarkParam = -1; ixrayOmfMarkParamsRefresh; ixrayOmfSaveSceneSettings;
+}
 global proc int xray_re_omf_export_options(string $parent, string $action, string $options, string $callback)
 {
 	if ($action == "post") {
@@ -158,12 +347,15 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		float $accrue = 2.0;
 		float $falloff = 2.0;
 		int $stopAtEnd = 0;
-		if (`optionVar -exists "ixrayOmfPositionPrecision"`) $precision = `optionVar -q "ixrayOmfPositionPrecision"`;
-		if (`optionVar -exists "ixrayOmfMotionName"`) $motionName = `optionVar -q "ixrayOmfMotionName"`;
-		if (`optionVar -exists "ixrayOmfSpeed"`) $speed = `optionVar -q "ixrayOmfSpeed"`;
-		if (`optionVar -exists "ixrayOmfAccrue"`) $accrue = `optionVar -q "ixrayOmfAccrue"`;
-		if (`optionVar -exists "ixrayOmfFalloff"`) $falloff = `optionVar -q "ixrayOmfFalloff"`;
-		if (`optionVar -exists "ixrayOmfStopAtEnd"`) $stopAtEnd = `optionVar -q "ixrayOmfStopAtEnd"`;
+		int $hasMotionMarks = 0;
+		string $marks = `ixrayOmfSceneValue "ixrayOmfMarks" ""`;
+		$precision = (int)`ixrayOmfSceneValue "ixrayOmfPositionPrecision" "8"`;
+		$motionName = `ixrayOmfSceneValue "ixrayOmfMotionName" ""`;
+		$speed = (float)`ixrayOmfSceneValue "ixrayOmfSpeed" "1"`;
+		$accrue = (float)`ixrayOmfSceneValue "ixrayOmfAccrue" "2"`;
+		$falloff = (float)`ixrayOmfSceneValue "ixrayOmfFalloff" "2"`;
+		$stopAtEnd = (int)`ixrayOmfSceneValue "ixrayOmfStopAtEnd" "0"`;
+		$hasMotionMarks = (int)`ixrayOmfSceneValue "ixrayOmfHasMotionMarks" "0"`;
 		string $params[];
 		tokenize($options, ";", $params);
 		int $i;
@@ -176,19 +368,62 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 			if (size($kv) >= 2 && $kv[0] == "omf_accrue") $accrue = (float)$kv[1];
 			if (size($kv) >= 2 && $kv[0] == "omf_falloff") $falloff = (float)$kv[1];
 			if (size($kv) >= 2 && $kv[0] == "omf_stop_at_end") $stopAtEnd = ($kv[1] == "true");
+			if (size($kv) >= 2 && $kv[0] == "omf_has_motion_marks") $hasMotionMarks = ($kv[1] == "true");
 		}
-		optionMenu -label "Position key precision" "ixrayOmfPositionPrecision";
+		optionMenu -label "Position key precision" -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfPositionPrecision";
 		menuItem -label "8 bit";
 		menuItem -label "16 bit";
 		menuItem -label "32 bit (float)";
 		optionMenu -edit -select (($precision == 16) ? 2 : (($precision == 32) ? 3 : 1)) "ixrayOmfPositionPrecision";
-		textFieldGrp -label "Motion name" -text $motionName "ixrayOmfMotionName";
+		textFieldGrp -label "Motion name" -text $motionName -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfMotionName";
 		text -label "Empty: use the OMF file name without extension." -align "left";
-		floatFieldGrp -numberOfFields 1 -label "Speed" -value1 $speed "ixrayOmfSpeed";
-		floatFieldGrp -numberOfFields 1 -label "Accrue" -value1 $accrue "ixrayOmfAccrue";
-		floatFieldGrp -numberOfFields 1 -label "Falloff" -value1 $falloff "ixrayOmfFalloff";
-		checkBox -label "Stop at end" -value $stopAtEnd "ixrayOmfStopAtEnd";
+		rowLayout -numberOfColumns 2 -columnWidth 1 220 -columnWidth 2 160;
+		floatFieldGrp -numberOfFields 1 -label "Speed" -value1 $speed -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfSpeed";
+		checkBox -label "Stop at end" -value $stopAtEnd -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfStopAtEnd";
+		setParent ..;
+		rowLayout -numberOfColumns 2 -columnWidth 1 220 -columnWidth 2 160;
+		floatFieldGrp -numberOfFields 1 -label "Accrue" -value1 $accrue -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfAccrue";
+		checkBox -label "Has Motion Marks" -value $hasMotionMarks -changeCommand "ixrayOmfMarksEnabledChanged" "ixrayOmfHasMotionMarks";
+		setParent ..;
+		floatFieldGrp -numberOfFields 1 -label "Falloff" -value1 $falloff -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfFalloff";
+		textField -visible false -text $marks "ixrayOmfMarksData";
+		frameLayout -label "Motion Marks" -collapsable false -enable $hasMotionMarks "ixrayOmfMarksFrame";
+		rowLayout -numberOfColumns 3 -columnWidth 1 180 -columnWidth 2 180 -columnWidth 3 220;
+		columnLayout -adj true;
+		text -label "Mark" -align "left";
+		textScrollList -width 176 -height 68 -allowMultiSelection false -selectCommand "ixrayOmfMarksSelect" "ixrayOmfMarksList";
+		rowLayout -numberOfColumns 2 -adjustableColumn 1;
+		button -label "Add" -command "ixrayOmfMarksAdd";
+		button -label "Delete" -command "ixrayOmfMarksDelete";
+		setParent ..;
+		setParent ..;
+		columnLayout -adj true;
+		text -label "Mark Param" -align "left";
+		textScrollList -width 176 -height 68 -allowMultiSelection false -enable false -selectCommand "ixrayOmfMarkParamsSelect" "ixrayOmfMarkParamsList";
+		rowLayout -numberOfColumns 2 -adjustableColumn 1;
+		button -label "Add" -enable false -command "ixrayOmfMarkParamAdd" "ixrayOmfMarkParamAdd";
+		button -label "Delete" -enable false -command "ixrayOmfMarkParamDelete" "ixrayOmfMarkParamDelete";
+		setParent ..;
+		setParent ..;
+		columnLayout -adj true;
+		text -label "Mark settings" -align "left";
+		text -label "Keys" -align "left";
+		rowLayout -numberOfColumns 2 -columnWidth 1 45 -columnWidth 2 160;
+		text -label "Start" -align "left";
+		floatField -width 160 -precision 3 -enable false -changeCommand "ixrayOmfMarkParamStore" -enterCommand "ixrayOmfMarkParamStore" "ixrayOmfMarkStart";
+		setParent ..;
+		rowLayout -numberOfColumns 2 -columnWidth 1 45 -columnWidth 2 160;
+		text -label "End" -align "left";
+		floatField -width 160 -precision 3 -enable false "ixrayOmfMarkEnd";
+		setParent ..;
+		setParent ..;
+		setParent ..;
+		ixrayOmfMarksRefresh;
+		ixrayOmfMarkParamsRefresh;
 	} else if ($action == "query") {
+		// The options callback can run before Maya sends a change event for a field
+		// that still has keyboard focus, so commit the selected mark explicitly.
+		ixrayOmfMarkParamStore;
 		int $item = `optionMenu -q -select "ixrayOmfPositionPrecision"`;
 		int $precision = ($item == 2) ? 16 : (($item == 3) ? 32 : 8);
 		string $motionName = `textFieldGrp -q -text "ixrayOmfMotionName"`;
@@ -196,17 +431,14 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		float $accrue = `floatFieldGrp -q -value1 "ixrayOmfAccrue"`;
 		float $falloff = `floatFieldGrp -q -value1 "ixrayOmfFalloff"`;
 		int $stopAtEnd = `checkBox -q -value "ixrayOmfStopAtEnd"`;
+		int $hasMotionMarks = `checkBox -q -value "ixrayOmfHasMotionMarks"`;
+		string $marks = `textField -q -text "ixrayOmfMarksData"`;
 		if (`gmatch $motionName "*\"*"` || `gmatch $motionName "*;*"` || `gmatch $motionName "*=*"`) {
 			error "Motion name cannot contain quotes, semicolons or equals signs.";
 			return 0;
 		}
-		optionVar -iv "ixrayOmfPositionPrecision" $precision;
-		optionVar -sv "ixrayOmfMotionName" $motionName;
-		optionVar -fv "ixrayOmfSpeed" $speed;
-		optionVar -fv "ixrayOmfAccrue" $accrue;
-		optionVar -fv "ixrayOmfFalloff" $falloff;
-		optionVar -iv "ixrayOmfStopAtEnd" $stopAtEnd;
-		eval($callback + " \"omf_position_precision=" + $precision + ";omf_motion_name=" + $motionName + ";omf_speed=" + $speed + ";omf_accrue=" + $accrue + ";omf_falloff=" + $falloff + ";omf_stop_at_end=" + ($stopAtEnd ? "true" : "false") + ";\"");
+		fileInfo "ixrayOmfPositionPrecision" $precision; fileInfo "ixrayOmfMotionName" $motionName; fileInfo "ixrayOmfSpeed" $speed; fileInfo "ixrayOmfAccrue" $accrue; fileInfo "ixrayOmfFalloff" $falloff; fileInfo "ixrayOmfStopAtEnd" $stopAtEnd; fileInfo "ixrayOmfHasMotionMarks" $hasMotionMarks; fileInfo "ixrayOmfMarks" $marks;
+		eval($callback + " \"omf_position_precision=" + $precision + ";omf_motion_name=" + $motionName + ";omf_speed=" + $speed + ";omf_accrue=" + $accrue + ";omf_falloff=" + $falloff + ";omf_stop_at_end=" + ($stopAtEnd ? "true" : "false") + ";omf_has_motion_marks=" + ($hasMotionMarks ? "true" : "false") + ";omf_marks=" + $marks + ";\"");
 	}
 	return 1;
 }

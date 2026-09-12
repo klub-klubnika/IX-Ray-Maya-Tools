@@ -1502,7 +1502,17 @@ MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
 	writer.w_u16(ALL_PARTITIONS);
 	writer.w_u16(0);
 	writer.w_float(m_omf_speed); writer.w_float(1.f); writer.w_float(m_omf_accrue); writer.w_float(m_omf_falloff);
-	writer.w_u32(0); // marks
+	const uint32_t marks_count = m_omf_has_motion_marks ? uint32_t(m_omf_marks.size()) : 0;
+	writer.w_u32(marks_count);
+	for (uint32_t mark_index = 0; mark_index < marks_count; ++mark_index) {
+		const omf_mark& mark = m_omf_marks[mark_index];
+		writer.w_s(mark.name);
+		writer.w_u32(uint32_t(mark.intervals.size()));
+		for (const auto& interval: mark.intervals) {
+			writer.w_float(interval.first);
+			writer.w_float(float(frame_count) / 30.0f);
+		}
+	}
 	writer.close_chunk();
 
 	if (!writer.save_to(path)) return MS::kFailure;
@@ -1595,6 +1605,8 @@ void maya_export_tools::set_default_options(void)
 	m_omf_accrue = 2.f;
 	m_omf_falloff = 2.f;
 	m_omf_stop_at_end = false;
+	m_omf_has_motion_marks = false;
+	m_omf_marks.clear();
 }
 
 MStatus maya_export_tools::parse_options(const MString& options)
@@ -1645,6 +1657,35 @@ MStatus maya_export_tools::parse_options(const MString& options)
 		else if (key_value[0] == "omf_accrue") m_omf_accrue = key_value[1].asFloat();
 		else if (key_value[0] == "omf_falloff") m_omf_falloff = key_value[1].asFloat();
 		else if (key_value[0] == "omf_stop_at_end") m_omf_stop_at_end = key_value[1] == "true";
+		else if (key_value[0] == "omf_has_motion_marks") m_omf_has_motion_marks = key_value[1] == "true";
+		else if (key_value[0] == "omf_marks") {
+			m_omf_marks.clear();
+			std::istringstream marks(key_value[1].asChar());
+			std::string group;
+			while (std::getline(marks, group, ',')) {
+				if (group.empty()) continue;
+				omf_mark mark;
+				const size_t separator = group.find(':');
+				if (separator == 0) return MS::kInvalidParameter;
+				if (separator == std::string::npos) {
+					mark.name = group;
+					m_omf_marks.push_back(std::move(mark));
+					continue;
+				}
+				mark.name = group.substr(0, separator);
+				std::istringstream intervals(group.substr(separator + 1));
+				std::string interval;
+				while (std::getline(intervals, interval, '|')) {
+					std::replace(interval.begin(), interval.end(), ':', ' ');
+					std::istringstream values(interval);
+					float start, end;
+					if (!(values >> start >> end) || end < start || !std::isfinite(start) || !std::isfinite(end))
+						return MS::kInvalidParameter;
+					mark.intervals.emplace_back(start, end);
+				}
+				m_omf_marks.push_back(std::move(mark));
+			}
+		}
 	}
 
 	return MS::kSuccess;
