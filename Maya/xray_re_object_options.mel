@@ -194,12 +194,38 @@ global proc ixrayOmfMarksEnabledChanged() {
 	ixrayOmfSaveSceneSettings;
 }
 
+// A group is stored as "name/start:end|start:end".  Older scenes used ':'
+// after the name too, which conflicts with an interval's Start:End separator.
+global proc ixrayOmfMarksNormalize() {
+	string $raw = `textField -q -text ixrayOmfMarksData`;
+	string $groups[]; tokenize($raw, ",", $groups);
+	string $output = "";
+	int $i, $j;
+	for ($i = 0; $i < size($groups); ++$i) {
+		string $group = $groups[$i];
+		string $slashParts[]; tokenize($group, "/", $slashParts);
+		if (size($slashParts) < 2) {
+			string $oldParts[]; tokenize($group, ":", $oldParts);
+			if (size($oldParts)) {
+				$group = $oldParts[0];
+				if (size($oldParts) > 1) {
+					string $intervals = $oldParts[1];
+					for ($j = 2; $j < size($oldParts); ++$j) $intervals += ":" + $oldParts[$j];
+					$group += "/" + $intervals;
+				}
+			}
+		}
+		$output = ($output == "" ? $group : $output + "," + $group);
+	}
+	textField -e -text $output ixrayOmfMarksData;
+}
+
 global proc ixrayOmfMarksRefresh() {
 	global int $gIxrayOmfSelectedMark;
 	string $raw = `textField -q -text ixrayOmfMarksData`;
 	textScrollList -e -removeAll ixrayOmfMarksList;
 	string $items[]; tokenize($raw, ",", $items);
-	for ($item in $items) { string $parts[]; tokenize($item, ":", $parts); if (size($parts) >= 1) textScrollList -e -append $parts[0] ixrayOmfMarksList; }
+	for ($item in $items) { string $parts[]; tokenize($item, "/", $parts); if (size($parts) >= 1) textScrollList -e -append $parts[0] ixrayOmfMarksList; }
 	if ($gIxrayOmfSelectedMark >= size($items)) $gIxrayOmfSelectedMark = -1;
 	if ($gIxrayOmfSelectedMark >= 0) textScrollList -e -selectIndexedItem ($gIxrayOmfSelectedMark + 1) ixrayOmfMarksList;
 }
@@ -217,7 +243,7 @@ global proc ixrayOmfMarkParamsRefresh() {
 	string $raw = `textField -q -text ixrayOmfMarksData`;
 	string $items[]; tokenize($raw, ",", $items);
 	if ($gIxrayOmfSelectedMark >= size($items)) return;
-	string $parts[]; tokenize($items[$gIxrayOmfSelectedMark], ":", $parts);
+	string $parts[]; tokenize($items[$gIxrayOmfSelectedMark], "/", $parts);
 	if (size($parts) < 2) return;
 	string $intervals[]; tokenize($parts[1], "|", $intervals);
 	int $i;
@@ -230,6 +256,10 @@ global proc ixrayOmfMarksSelect() {
 	global int $gIxrayOmfSelectedMark;
 	global int $gIxrayOmfSelectedMarkParam;
 	int $selected[] = `textScrollList -q -selectIndexedItem ixrayOmfMarksList`;
+	// Maya changes the list selection before the Start field loses focus.  Save
+	// the previous interval first so its value cannot be written into the newly
+	// selected mark.
+	ixrayOmfMarkParamStore;
 	$gIxrayOmfSelectedMark = size($selected) ? $selected[0] - 1 : -1;
 	$gIxrayOmfSelectedMarkParam = -1;
 	ixrayOmfMarkParamsRefresh;
@@ -239,12 +269,14 @@ global proc ixrayOmfMarkParamsSelect() {
 	global int $gIxrayOmfSelectedMark;
 	global int $gIxrayOmfSelectedMarkParam;
 	int $selected[] = `textScrollList -q -selectIndexedItem ixrayOmfMarkParamsList`;
-	$gIxrayOmfSelectedMarkParam = size($selected) ? $selected[0] - 1 : -1;
+	int $newParam = size($selected) ? $selected[0] - 1 : -1;
+	if ($newParam != $gIxrayOmfSelectedMarkParam) ixrayOmfMarkParamStore;
+	$gIxrayOmfSelectedMarkParam = $newParam;
 	ixrayOmfMarkParamsRefresh;
 	if ($gIxrayOmfSelectedMark < 0 || $gIxrayOmfSelectedMarkParam < 0) return;
 	string $raw = `textField -q -text ixrayOmfMarksData`;
 	string $groups[]; tokenize($raw, ",", $groups);
-	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], ":", $parts);
+	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], "/", $parts);
 	string $intervals[]; tokenize($parts[1], "|", $intervals);
 	string $values[]; tokenize($intervals[$gIxrayOmfSelectedMarkParam], ":", $values);
 	if (size($values) == 2) {
@@ -267,12 +299,12 @@ global proc ixrayOmfMarkParamStore() {
 	$end /= 30.0;
 	string $raw = `textField -q -text ixrayOmfMarksData`;
 	string $groups[]; tokenize($raw, ",", $groups);
-	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], ":", $parts);
+	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], "/", $parts);
 	string $intervals[]; tokenize($parts[1], "|", $intervals);
 	$intervals[$gIxrayOmfSelectedMarkParam] = $start + ":" + $end;
 	string $newIntervals = ""; int $i;
 	for ($i = 0; $i < size($intervals); ++$i) $newIntervals = ($newIntervals == "" ? $intervals[$i] : $newIntervals + "|" + $intervals[$i]);
-	$groups[$gIxrayOmfSelectedMark] = $parts[0] + ":" + $newIntervals;
+	$groups[$gIxrayOmfSelectedMark] = $parts[0] + "/" + $newIntervals;
 	string $output = "";
 	for ($i = 0; $i < size($groups); ++$i) $output = ($output == "" ? $groups[$i] : $output + "," + $groups[$i]);
 	textField -e -text $output ixrayOmfMarksData;
@@ -301,16 +333,19 @@ global proc ixrayOmfMarksDelete() {
 global proc ixrayOmfMarkParamAdd() {
 	global int $gIxrayOmfSelectedMark;
 	global int $gIxrayOmfSelectedMarkParam;
+	// Commit the current interval before adding another one.  The Add button
+	// takes focus away from Start before Maya emits its normal field event.
+	ixrayOmfMarkParamStore;
 	int $selected[] = `textScrollList -q -selectIndexedItem ixrayOmfMarksList`;
 	if (size($selected)) $gIxrayOmfSelectedMark = $selected[0] - 1;
 	if ($gIxrayOmfSelectedMark < 0) return;
 	string $raw = `textField -q -text ixrayOmfMarksData`;
 	string $groups[]; tokenize($raw, ",", $groups);
-	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], ":", $parts);
+	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], "/", $parts);
 	string $intervals = size($parts) > 1 ? $parts[1] : "";
 	float $end = ixrayOmfMarkLastKey() / 30.0;
 	$intervals = ($intervals == "" ? "0:" + $end : $intervals + "|0:" + $end);
-	$groups[$gIxrayOmfSelectedMark] = $parts[0] + ":" + $intervals;
+	$groups[$gIxrayOmfSelectedMark] = $parts[0] + "/" + $intervals;
 	string $output = ""; int $i;
 	for ($i = 0; $i < size($groups); ++$i) $output = ($output == "" ? $groups[$i] : $output + "," + $groups[$i]);
 	textField -e -text $output ixrayOmfMarksData; $gIxrayOmfSelectedMarkParam = size(`textScrollList -q -allItems ixrayOmfMarkParamsList`); ixrayOmfMarkParamsRefresh; ixrayOmfMarkParamsSelect; ixrayOmfSaveSceneSettings;
@@ -326,11 +361,11 @@ global proc ixrayOmfMarkParamDelete() {
 	if ($gIxrayOmfSelectedMark < 0 || $gIxrayOmfSelectedMarkParam < 0) return;
 	string $raw = `textField -q -text ixrayOmfMarksData`;
 	string $groups[]; tokenize($raw, ",", $groups);
-	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], ":", $parts);
+	string $parts[]; tokenize($groups[$gIxrayOmfSelectedMark], "/", $parts);
 	string $intervals[]; tokenize($parts[1], "|", $intervals);
 	string $newIntervals = ""; int $i;
 	for ($i = 0; $i < size($intervals); ++$i) if ($i != $gIxrayOmfSelectedMarkParam) $newIntervals = ($newIntervals == "" ? $intervals[$i] : $newIntervals + "|" + $intervals[$i]);
-	$groups[$gIxrayOmfSelectedMark] = $parts[0] + ":" + $newIntervals;
+	$groups[$gIxrayOmfSelectedMark] = $parts[0] + "/" + $newIntervals;
 	string $output = "";
 	for ($i = 0; $i < size($groups); ++$i) $output = ($output == "" ? $groups[$i] : $output + "," + $groups[$i]);
 	textField -e -text $output ixrayOmfMarksData; $gIxrayOmfSelectedMarkParam = -1; ixrayOmfMarkParamsRefresh; ixrayOmfSaveSceneSettings;
@@ -349,6 +384,7 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		int $stopAtEnd = 0;
 		int $hasMotionMarks = 0;
 		string $marks = `ixrayOmfSceneValue "ixrayOmfMarks" ""`;
+		string $scenePath = `file -q -sn`;
 		$precision = (int)`ixrayOmfSceneValue "ixrayOmfPositionPrecision" "8"`;
 		$motionName = `ixrayOmfSceneValue "ixrayOmfMotionName" ""`;
 		$speed = (float)`ixrayOmfSceneValue "ixrayOmfSpeed" "1"`;
@@ -362,13 +398,13 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		for ($i = 0; $i < size($params); ++$i) {
 			string $kv[];
 			tokenize($params[$i], "=", $kv);
-			if (size($kv) >= 2 && $kv[0] == "omf_position_precision") $precision = (int)$kv[1];
-			if (size($kv) >= 2 && $kv[0] == "omf_motion_name") $motionName = $kv[1];
-			if (size($kv) >= 2 && $kv[0] == "omf_speed") $speed = (float)$kv[1];
-			if (size($kv) >= 2 && $kv[0] == "omf_accrue") $accrue = (float)$kv[1];
-			if (size($kv) >= 2 && $kv[0] == "omf_falloff") $falloff = (float)$kv[1];
-			if (size($kv) >= 2 && $kv[0] == "omf_stop_at_end") $stopAtEnd = ($kv[1] == "true");
-			if (size($kv) >= 2 && $kv[0] == "omf_has_motion_marks") $hasMotionMarks = ($kv[1] == "true");
+			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_position_precision") $precision = (int)$kv[1];
+			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_motion_name") $motionName = $kv[1];
+			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_speed") $speed = (float)$kv[1];
+			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_accrue") $accrue = (float)$kv[1];
+			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_falloff") $falloff = (float)$kv[1];
+			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_stop_at_end") $stopAtEnd = ($kv[1] == "true");
+			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_has_motion_marks") $hasMotionMarks = ($kv[1] == "true");
 		}
 		optionMenu -label "Position key precision" -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfPositionPrecision";
 		menuItem -label "8 bit";
@@ -387,6 +423,7 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		setParent ..;
 		floatFieldGrp -numberOfFields 1 -label "Falloff" -value1 $falloff -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfFalloff";
 		textField -visible false -text $marks "ixrayOmfMarksData";
+		ixrayOmfMarksNormalize;
 		frameLayout -label "Motion Marks" -collapsable false -enable $hasMotionMarks "ixrayOmfMarksFrame";
 		rowLayout -numberOfColumns 3 -columnWidth 1 180 -columnWidth 2 180 -columnWidth 3 220;
 		columnLayout -adj true;
@@ -410,7 +447,7 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		text -label "Keys" -align "left";
 		rowLayout -numberOfColumns 2 -columnWidth 1 45 -columnWidth 2 160;
 		text -label "Start" -align "left";
-		floatField -width 160 -precision 3 -enable false -changeCommand "ixrayOmfMarkParamStore" -enterCommand "ixrayOmfMarkParamStore" "ixrayOmfMarkStart";
+		floatField -width 160 -precision 3 -enable false -enterCommand "ixrayOmfMarkParamStore" "ixrayOmfMarkStart";
 		setParent ..;
 		rowLayout -numberOfColumns 2 -columnWidth 1 45 -columnWidth 2 160;
 		text -label "End" -align "left";

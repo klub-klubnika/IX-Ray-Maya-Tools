@@ -1665,15 +1665,17 @@ MStatus maya_export_tools::parse_options(const MString& options)
 			while (std::getline(marks, group, ',')) {
 				if (group.empty()) continue;
 				omf_mark mark;
-				const size_t separator = group.find(':');
-				if (separator == 0) return MS::kInvalidParameter;
-				if (separator == std::string::npos) {
+				const size_t separator = group.find('/');
+				const size_t legacy_separator = group.find(':');
+				const size_t name_separator = separator != std::string::npos ? separator : legacy_separator;
+				if (name_separator == 0) return MS::kInvalidParameter;
+				if (name_separator == std::string::npos) {
 					mark.name = group;
 					m_omf_marks.push_back(std::move(mark));
 					continue;
 				}
-				mark.name = group.substr(0, separator);
-				std::istringstream intervals(group.substr(separator + 1));
+				mark.name = group.substr(0, name_separator);
+				std::istringstream intervals(group.substr(name_separator + 1));
 				std::string interval;
 				while (std::getline(intervals, interval, '|')) {
 					std::replace(interval.begin(), interval.end(), ':', ' ');
