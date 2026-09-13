@@ -376,7 +376,7 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		setParent $parent;
 		columnLayout -adj true;
 		text -label "Skeletal OMF: exports the current Maya timeline as one motion." -align "left";
-		int $precision = 8;
+		int $precision = 32;
 		string $motionName = "";
 		float $speed = 1.0;
 		float $accrue = 2.0;
@@ -385,7 +385,7 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		int $hasMotionMarks = 0;
 		string $marks = `ixrayOmfSceneValue "ixrayOmfMarks" ""`;
 		string $scenePath = `file -q -sn`;
-		$precision = (int)`ixrayOmfSceneValue "ixrayOmfPositionPrecision" "8"`;
+		$precision = (int)`ixrayOmfSceneValue "ixrayOmfPositionPrecision" "32"`;
 		$motionName = `ixrayOmfSceneValue "ixrayOmfMotionName" ""`;
 		$speed = (float)`ixrayOmfSceneValue "ixrayOmfSpeed" "1"`;
 		$accrue = (float)`ixrayOmfSceneValue "ixrayOmfAccrue" "2"`;

@@ -1599,7 +1599,7 @@ void maya_export_tools::set_default_options(void)
 	m_ogf_smoothing = ogf_smoothing::normals;
 	m_ogf_influences = 4;
 	m_ogf_motion_refs.clear();
-	m_omf_position_precision = 8;
+	m_omf_position_precision = 32;
 	m_omf_motion_name.clear();
 	m_omf_speed = 1.f;
 	m_omf_accrue = 2.f;
