@@ -9,6 +9,9 @@
 
 # CMake build trees
 /build*/
+!/build-vs2022/
+/build-vs2022/*
+!/build-vs2022/IXRayMayaTools.sln
 /cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
