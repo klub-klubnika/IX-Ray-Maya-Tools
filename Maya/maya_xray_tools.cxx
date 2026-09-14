@@ -1027,7 +1027,7 @@ MStatus initializePlugin(MObject obj)
 		return status;
 	if (!(status = plugin_fn.registerFileTranslator(object_writer, "", maya_object_writer::creator, "xray_re_object_export_options", "", true)))
 		return status;
-	if (!(status = plugin_fn.registerFileTranslator(skl_object_writer, "", maya_skl_object_writer::creator, "xray_re_object_export_options", "", true)))
+	if (!(status = plugin_fn.registerFileTranslator(skl_object_writer, "", maya_skl_object_writer::creator, "xray_re_object_export_options", "skeletal=true;", true)))
 		return status;
 	if (!(status = plugin_fn.registerFileTranslator(dm_reader, "", maya_dm_reader::creator, "", "", true)))
 		return status;

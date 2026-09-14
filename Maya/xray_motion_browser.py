@@ -55,16 +55,30 @@ def _option(name, default):
     return cmds.optionVar(query=name) if cmds.optionVar(exists=name) else default
 
 
+def _unique_display_name(motions, name):
+    """Return a list label that does not collide with another registered motion."""
+    existing = {str(m.get("display_name", m.get("name", ""))).casefold()
+                for m in motions if isinstance(m, dict)}
+    if name.casefold() not in existing:
+        return name
+    suffix = 1
+    while (name + "_" + str(suffix)).casefold() in existing:
+        suffix += 1
+    return name + "_" + str(suffix)
+
+
+def _display_name(motion):
+    return motion.get("display_name", motion["name"])
+
+
 def _load_paths(paths):
     motions = list(_motions)
     for path in paths:
         path = os.path.normpath(os.path.abspath(path))
         if path.lower().endswith(EXTENSIONS):
             for source_index, name in enumerate(cmds.ixrayMotionList(path) or []):
-                if not any(os.path.normcase(m["path"]) == os.path.normcase(path) and
-                           m["name"] == name and m.get("source_index", 0) == source_index for m in motions):
-                    motions.append(dict(path=path, name=name, source_index=source_index,
-                                        scale=1.0, stretch=1.0, start=0.0))
+                motions.append(dict(path=path, name=name, display_name=_unique_display_name(motions, name), source_index=source_index,
+                                    scale=1.0, stretch=1.0, start=0.0))
     _motions[:] = motions
     _save_library()
     _fill()
@@ -81,7 +95,7 @@ def _fill():
     cmds.textScrollList(_controls["list"], edit=True, removeAll=True)
     for motion in _motions:
         cmds.textScrollList(_controls["list"], edit=True,
-                            append=motion["name"])
+                            append=_display_name(motion))
 
 
 def _remember_options(*_):
@@ -107,7 +121,13 @@ def _restore():
             if not isinstance(records, list) or any(not isinstance(m, dict) or
                     not all(k in m for k in ("path", "name", "scale", "stretch", "start")) for m in records):
                 raise ValueError("invalid library")
-            _motions.extend(records)
+            for motion in records:
+                label = motion.get("display_name", motion["name"])
+                if label.casefold() in {str(item.get("display_name", item.get("name", ""))).casefold()
+                                        for item in _motions}:
+                    label = _unique_display_name(_motions, motion["name"])
+                motion["display_name"] = label
+                _motions.append(motion)
         except (ValueError, TypeError):
             cmds.warning("IX-Ray: cannot read motion library on " + root)
     cmds.text(_controls["target"], edit=True, label="Skeleton: " + root)
@@ -229,11 +249,8 @@ def extern_load(paths):
         if not path.lower().endswith(EXTENSIONS):
             continue
         for source_index, name in enumerate(cmds.ixrayMotionList(path) or []):
-            if not any(os.path.normcase(m.get("path", "")) == os.path.normcase(path) and
-                       m.get("name") == name and m.get("source_index", 0) == source_index
-                       for m in record if isinstance(m, dict)):
-                record.append(dict(path=path, name=name, source_index=source_index,
-                                   scale=1.0, stretch=1.0, start=0.0))
+            record.append(dict(path=path, name=name, display_name=_unique_display_name(record, name), source_index=source_index,
+                               scale=1.0, stretch=1.0, start=0.0))
     cmds.setAttr(root + "." + LIBRARY_ATTR, json.dumps(record, ensure_ascii=True), type="string")
     if not cmds.about(batch=True) and cmds.window(WINDOW, exists=True):
         _target = selected

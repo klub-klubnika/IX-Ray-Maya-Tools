@@ -57,6 +57,7 @@ private:
 	bool m_vnormals;
 	ogf_smoothing m_ogf_smoothing;
 	unsigned m_ogf_influences;
+	unsigned m_skl_influences;
 	std::string m_ogf_motion_refs;
 	unsigned m_omf_position_precision;
 	std::string m_omf_motion_name;

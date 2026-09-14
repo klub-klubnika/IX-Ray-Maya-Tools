@@ -1242,7 +1242,7 @@ MStatus maya_export_tools::export_skl_object(const char* path, bool selection_on
 	m_skeletal = true;
 
 	status = MS::kFailure;
-	if (xr_object* object = create_skl_object(mesh_obj, skin_obj))
+	if (xr_object* object = create_skl_object(mesh_obj, skin_obj, m_skl_influences))
 	{
 		if (object->save_object(path, m_compressed ? compress_options::compress : compress_options::none))
 			status = MS::kSuccess;
@@ -1606,6 +1606,7 @@ void maya_export_tools::set_default_options(void)
 	m_vnormals = false;
 	m_ogf_smoothing = ogf_smoothing::normals;
 	m_ogf_influences = 4;
+	m_skl_influences = 4;
 	m_ogf_motion_refs.clear();
 	m_omf_position_precision = 32;
 	m_omf_motion_name.clear();
@@ -1654,6 +1655,10 @@ MStatus maya_export_tools::parse_options(const MString& options)
 		else if (key_value[0] == "ogf_influences") {
 			if (key_value[1] != "2" && key_value[1] != "4") return MS::kInvalidParameter;
 			m_ogf_influences = key_value[1].asInt();
+		}
+		else if (key_value[0] == "skl_influences") {
+			if (key_value[1] != "2" && key_value[1] != "4") return MS::kInvalidParameter;
+			m_skl_influences = key_value[1].asInt();
 		}
 		else if (key_value[0] == "ogf_motion_refs") m_ogf_motion_refs = normalize_omf_refs(key_value[1].asChar());
 		else if (key_value[0] == "omf_position_precision") {

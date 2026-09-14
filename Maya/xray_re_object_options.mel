@@ -6,16 +6,15 @@
 
 global proc int xray_re_object_import_options(string $parent, string $action, string $options, string $callback)
 {
-	string $smoothing_params[] = { "normals", "soc", "cscop" };
-	string $smoothing_names[]  = { "smoothing_normals", "smoothing_soc", "smoothing_cscop" };
-	string $smoothing_labels[] = { "Normals", "SoC", "CS/CoP" };
+	string $smoothing_params[] = { "soc", "cscop", "normals" };
+	string $smoothing_names[]  = { "smoothing_soc", "smoothing_cscop", "smoothing_normals" };
+	string $smoothing_labels[] = { "SoC", "CS/CoP", "Normals" };
 	int $i, $j;
 
 	if ($action == "post")
 	{
 		setParent $parent;
 		columnLayout -adj true;
-
 		text -label "Smoothing:" -align "left";
 		radioCollection "smoothing_mode";
 		for ($i = 0; $i < size($smoothing_params); $i++)
@@ -89,8 +88,8 @@ global proc int xray_re_object_import_options(string $parent, string $action, st
 
 global proc int xray_re_ogf_export_options(string $parent, string $action, string $options, string $callback)
 {
-	string $modes[] = { "normals", "soc", "cscop" };
-	string $labels[] = { "Normals", "SDK SoC (smoothing groups)", "SDK CS/CoP (smooth edges)" };
+	string $modes[] = { "soc", "cscop", "normals" };
+	string $labels[] = { "SDK SoC (smoothing groups)", "SDK CS/CoP (smooth edges)", "Normals" };
 	int $i;
 	if ($action == "post") {
 		setParent $parent;
@@ -123,16 +122,14 @@ global proc int xray_re_ogf_export_options(string $parent, string $action, strin
 		menuItem -label "2 (SoC / CS / CoP)";
 		menuItem -label "4 (CS / CoP / IX-Ray)";
 		optionMenu -edit -select (($influences == 2) ? 1 : 2) "ixrayOgfInfluences";
-		text -label "Keeps strongest weights and normalizes them." -align "left";
-		textFieldGrp -label "OMF references" -text $refs -changeCommand "ixrayOgfSaveMotionRefs" -textChangedCommand "ixrayOgfSaveMotionRefs" "ixrayOgfMotionRefs";
-		text -label "Paths relative to meshes, without .omf; separate with commas." -align "left";
-		text -label "Empty: skeleton without animations. Motions are not embedded." -align "left";
+		text -label "OMF references" -align "left";
+		textField -width 440 -text $refs -changeCommand "ixrayOgfSaveMotionRefs" -textChangedCommand "ixrayOgfSaveMotionRefs" "ixrayOgfMotionRefs";
 	} else if ($action == "query") {
 		string $selected = `radioCollection -q -sl "ixrayOgfSmoothing"`;
 		string $mode = "normals";
 		for ($i = 0; $i < 3; ++$i) if ($selected == ("ixrayOgf_" + $modes[$i])) $mode = $modes[$i];
 		int $influences = (`optionMenu -q -select "ixrayOgfInfluences"` == 1) ? 2 : 4;
-		string $refs = `textFieldGrp -q -text "ixrayOgfMotionRefs"`;
+		string $refs = `textField -q -text "ixrayOgfMotionRefs"`;
 		// Forward slashes also avoid MEL escape sequences in the callback string.
 		$refs = substituteAllString($refs, "\\", "/");
 		if (`gmatch $refs "*\"*"` || `gmatch $refs "*;*"` || `gmatch $refs "*=*"`) {
@@ -152,7 +149,7 @@ global proc string ixrayOmfSceneValue(string $key, string $fallback) { string $v
 
 global proc ixrayOgfSaveMotionRefs() {
 	if (!`control -exists ixrayOgfMotionRefs`) return;
-	string $refs = `textFieldGrp -q -text ixrayOgfMotionRefs`;
+	string $refs = `textField -q -text ixrayOgfMotionRefs`;
 	$refs = substituteAllString($refs, "\\", "/");
 	fileInfo "ixrayOgfMotionRefs" $refs;
 }
@@ -490,6 +487,7 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 	{
 		setParent $parent;
 		columnLayout -adj true;
+		int $skeletal = `gmatch $options "*skeletal=true*"`;
 
 		text -label "Target version:";
 
@@ -506,6 +504,15 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 				radioCollection -edit -select $sdk_ver_names[$j] "sdk_ver";
 
 		checkBox -label "Compressed" "compressed";
+		if ($skeletal) {
+			int $influences = 4;
+			if (`optionVar -exists "ixraySklObjectInfluences"`)
+				$influences = `optionVar -q "ixraySklObjectInfluences"`;
+			optionMenu -label "Maximum bone influences" "ixraySklObjectInfluences";
+			menuItem -label "2 (SoC / CS / CoP)";
+			menuItem -label "4 (CS / CoP / IX-Ray)";
+			optionMenu -edit -select (($influences == 2) ? 1 : 2) "ixraySklObjectInfluences";
+		}
 
 		int $compressed = 0;
 		if (`optionVar -exists "ixrayExportCompressed"`)
@@ -541,7 +548,13 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 	}
 	else if ($action == "query")
 	{
+		int $skeletal = `gmatch $options "*skeletal=true*"`;
 		$options = "";
+		if ($skeletal) {
+			int $influences = (`optionMenu -q -select "ixraySklObjectInfluences"` == 1) ? 2 : 4;
+			$options += "skeletal=true;skl_influences=" + $influences + ";";
+			optionVar -iv "ixraySklObjectInfluences" $influences;
+		}
 
 		string $sdk_version = `radioCollection -q -sl "sdk_ver"`;
 		int $vnormals = ($sdk_version == "ver_normals");
