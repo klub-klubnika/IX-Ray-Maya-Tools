@@ -31,6 +31,3 @@ Testing/
 
 # Downloaded Maya SDK packages (stored in the CMake build directory)
 /deps/
-
-# Temporary repository used only while importing legacy history
-/.history-source/
