@@ -1,0 +1,36 @@
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+
+# CMake build trees
+/build*/
+/cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+
+# Compiled binaries and intermediate files
+*.obj
+*.pdb
+*.idb
+*.ilk
+*.lib
+*.exp
+*.dll
+*.mll
+*.exe
+
+# Downloaded Maya SDK packages (stored in the CMake build directory)
+/deps/
+
+# Temporary repository used only while importing legacy history
+/.history-source/
