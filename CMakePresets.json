@@ -1,0 +1,18 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "vs2022",
+      "displayName": "Visual Studio 2022 x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/build-vs2022",
+      "cacheVariables": {
+        "IXRAY_DOWNLOAD_MAYA_SDKS": "ON"
+      }
+    }
+  ]
+}
