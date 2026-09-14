@@ -614,6 +614,14 @@ static MStatus extract_weights(MFnMesh& mesh_fn, MFnSkinCluster& skin_fn,
 		}
 	}
 
+	for (size_t vertex_index = 0; vertex_index < weight_vmrefs.size(); ++vertex_index) {
+		if (weight_vmrefs[vertex_index].size() > 4) {
+			MGlobal::displayError(MString("IX-Ray: vertex ") + unsigned(vertex_index) +
+				" has more than 4 non-zero bone influences. Export cancelled.");
+			return MS::kFailure;
+		}
+	}
+
 	if (influence_limit) {
 		for (auto& refs: weight_vmrefs) {
 			std::stable_sort(refs.begin(), refs.end(), [&vmaps](const lw_vmref_entry& a, const lw_vmref_entry& b) {
