@@ -16,15 +16,6 @@ global proc int xray_re_object_import_options(string $parent, string $action, st
 		setParent $parent;
 		columnLayout -adj true;
 
-		int $split_parts = 1;
-		if (`optionVar -exists "ixrayImportSplitParts"`)
-			$split_parts = `optionVar -q "ixrayImportSplitParts"`;
-		checkBox -label "Split mesh into parts" -value $split_parts "split_parts";
-		int $show_shapes = 1;
-		if (`optionVar -exists "ixrayImportShowShapes"`)
-			$show_shapes = `optionVar -q "ixrayImportShowShapes"`;
-		checkBox -label "Show Collision Shapes" -value $show_shapes "ixray_show_shapes";
-
 		text -label "Smoothing:" -align "left";
 		radioCollection "smoothing_mode";
 		for ($i = 0; $i < size($smoothing_params); $i++)
@@ -36,6 +27,15 @@ global proc int xray_re_object_import_options(string $parent, string $action, st
 		for ($i = 0; $i < size($smoothing_params); $i++)
 			if ($smoothing_params[$i] == $smoothing)
 				radioCollection -edit -select $smoothing_names[$i] "smoothing_mode";
+
+		int $split_parts = 1;
+		if (`optionVar -exists "ixrayImportSplitParts"`)
+			$split_parts = `optionVar -q "ixrayImportSplitParts"`;
+		checkBox -label "Split mesh into parts" -value $split_parts "split_parts";
+		int $show_shapes = 1;
+		if (`optionVar -exists "ixrayImportShowShapes"`)
+			$show_shapes = `optionVar -q "ixrayImportShowShapes"`;
+		checkBox -label "Show Collision Shapes" -value $show_shapes "ixray_show_shapes";
 
 		string $params[];
 		tokenize($options, ";", $params);
@@ -90,12 +90,11 @@ global proc int xray_re_object_import_options(string $parent, string $action, st
 global proc int xray_re_ogf_export_options(string $parent, string $action, string $options, string $callback)
 {
 	string $modes[] = { "normals", "soc", "cscop" };
-	string $labels[] = { "Maya normals (preserve custom normals)", "SDK SoC (smoothing groups)", "SDK CS/CoP (smooth edges)" };
+	string $labels[] = { "Normals", "SDK SoC (smoothing groups)", "SDK CS/CoP (smooth edges)" };
 	int $i;
 	if ($action == "post") {
 		setParent $parent;
 		columnLayout -adj true;
-		text -label "Skeletal OGF v4" -align "left";
 		text -label "Smoothing:" -align "left";
 		radioCollection "ixrayOgfSmoothing";
 		for ($i = 0; $i < 3; ++$i)
@@ -409,7 +408,7 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		optionMenu -label "Position key precision" -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfPositionPrecision";
 		menuItem -label "8 bit";
 		menuItem -label "16 bit";
-		menuItem -label "32 bit (float)";
+		menuItem -label "32 bit";
 		optionMenu -edit -select (($precision == 16) ? 2 : (($precision == 32) ? 3 : 1)) "ixrayOmfPositionPrecision";
 		textFieldGrp -label "Motion name" -text $motionName -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfMotionName";
 		text -label "Empty: use the OMF file name without extension." -align "left";
@@ -484,7 +483,7 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 {
 	string $sdk_ver_params[] = { "1850", "0.4", "0.6" };
 	string $sdk_ver_names[]  = { "ver_1850", "ver_0_4", "ver_0_6" };
-	string $sdk_ver_labels[] = { "1850", "ShoC", "CSky/CoP" };
+	string $sdk_ver_labels[] = { "1850", "SoC", "CS/CoP" };
 	int $i, $j;
 
 	if ($action == "post")
@@ -497,6 +496,7 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 		radioCollection "sdk_ver";
 		for ($i = 0; $i < size($sdk_ver_params); $i++)
 			radioButton -label $sdk_ver_labels[$i] $sdk_ver_names[$i];
+		radioButton -label "Normals" "ver_normals";
 
 		string $sdk_version = "";
 		if (`optionVar -exists "ixrayExportSdkVersion"`)
@@ -506,7 +506,6 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 				radioCollection -edit -select $sdk_ver_names[$j] "sdk_ver";
 
 		checkBox -label "Compressed" "compressed";
-		checkBox -label "Custom normals (export vnormals)" "vnormals";
 
 		int $compressed = 0;
 		if (`optionVar -exists "ixrayExportCompressed"`)
@@ -516,7 +515,6 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 		int $vnormals = 0;
 		if (`optionVar -exists "ixrayExportVNormals"`)
 			$vnormals = `optionVar -q "ixrayExportVNormals"`;
-		checkBox -edit -value ($vnormals != 0) "vnormals";
 
 		string $params[];
 		tokenize($options, ";", $params);
@@ -536,14 +534,17 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 				checkBox -edit -value (($kv[1] == "true") ? true : false) "compressed";
 
 			if ($kv[0] == "vnormals")
-				checkBox -edit -value (($kv[1] == "true") ? true : false) "vnormals";
+				$vnormals = (($kv[1] == "true") ? 1 : 0);
 		}
+		if ($vnormals)
+			radioCollection -edit -select "ver_normals" "sdk_ver";
 	}
 	else if ($action == "query")
 	{
 		$options = "";
 
 		string $sdk_version = `radioCollection -q -sl "sdk_ver"`;
+		int $vnormals = ($sdk_version == "ver_normals");
 		for ($i = 0; $i < size($sdk_ver_names); $i++)
 		{
 			if ($sdk_ver_names[$i] == $sdk_version)
@@ -564,7 +565,7 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 			optionVar -iv "ixrayExportCompressed" 0;
 		}
 
-		if (`checkBox -q -value "vnormals"`)
+		if ($vnormals)
 		{
 			$options += "vnormals=true;";
 			optionVar -iv "ixrayExportVNormals" 1;
