@@ -366,6 +366,26 @@ global proc ixrayOmfMarkParamDelete() {
 	for ($i = 0; $i < size($groups); ++$i) $output = ($output == "" ? $groups[$i] : $output + "," + $groups[$i]);
 	textField -e -text $output ixrayOmfMarksData; $gIxrayOmfSelectedMarkParam = -1; ixrayOmfMarkParamsRefresh; ixrayOmfSaveSceneSettings;
 }
+
+// OMF playback speed is expressed relative to the engine's base rate of 30 FPS.
+// Maya returns named units (film, ntsc, ...) or a value such as "120fps".
+global proc float ixrayOmfCurrentFps() {
+	string $unit = `currentUnit -query -time`;
+	if ($unit == "game") return 15.0;
+	if ($unit == "film") return 24.0;
+	if ($unit == "pal") return 25.0;
+	if ($unit == "ntsc") return 30.0;
+	if ($unit == "show") return 48.0;
+	if ($unit == "palf") return 50.0;
+	if ($unit == "ntscf") return 60.0;
+	if (`gmatch $unit "*fps"`) {
+		string $fpsText = substituteAllString($unit, "fps", "");
+		float $fps = (float)$fpsText;
+		if ($fps > 0.0) return $fps;
+	}
+	return 30.0;
+}
+
 global proc int xray_re_omf_export_options(string $parent, string $action, string $options, string $callback)
 {
 	if ($action == "post") {
@@ -383,7 +403,8 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		string $scenePath = `file -q -sn`;
 		$precision = (int)`ixrayOmfSceneValue "ixrayOmfPositionPrecision" "32"`;
 		$motionName = `ixrayOmfSceneValue "ixrayOmfMotionName" ""`;
-		$speed = (float)`ixrayOmfSceneValue "ixrayOmfSpeed" "1"`;
+		// The speed must always match the current scene frame rate.
+		$speed = ixrayOmfCurrentFps() / 30.0;
 		$accrue = (float)`ixrayOmfSceneValue "ixrayOmfAccrue" "2"`;
 		$falloff = (float)`ixrayOmfSceneValue "ixrayOmfFalloff" "2"`;
 		$stopAtEnd = (int)`ixrayOmfSceneValue "ixrayOmfStopAtEnd" "0"`;
@@ -460,7 +481,7 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		int $item = `optionMenu -q -select "ixrayOmfPositionPrecision"`;
 		int $precision = ($item == 2) ? 16 : (($item == 3) ? 32 : 8);
 		string $motionName = `textFieldGrp -q -text "ixrayOmfMotionName"`;
-		float $speed = `floatFieldGrp -q -value1 "ixrayOmfSpeed"`;
+		float $speed = ixrayOmfCurrentFps() / 30.0;
 		float $accrue = `floatFieldGrp -q -value1 "ixrayOmfAccrue"`;
 		float $falloff = `floatFieldGrp -q -value1 "ixrayOmfFalloff"`;
 		int $stopAtEnd = `checkBox -q -value "ixrayOmfStopAtEnd"`;

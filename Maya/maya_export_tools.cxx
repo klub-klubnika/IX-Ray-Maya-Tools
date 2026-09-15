@@ -1443,6 +1443,14 @@ MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
 
 	const MTime saved_time(MAnimControl::currentTime());
 	const MTime::Unit unit = MTime::uiUnit();
+	const double maya_fps = 1.0 / MTime(1.0, unit).as(MTime::kSeconds);
+	if (!std::isfinite(maya_fps) || maya_fps <= 0.0) {
+		MGlobal::displayError("IX-Ray: invalid Maya frame rate for OMF export.");
+		return MS::kFailure;
+	}
+	// OMF playback is based on 30 FPS.  Preserve the Maya animation's real-time
+	// duration by scaling the motion speed to the current Maya frame rate.
+	m_omf_speed = float(maya_fps / 30.0);
 	const int32_t frame_start = int32_t(MAnimControl::minTime().as(unit));
 	const int32_t frame_end = int32_t(MAnimControl::maxTime().as(unit));
 	if (frame_end < frame_start) return MS::kInvalidParameter;
