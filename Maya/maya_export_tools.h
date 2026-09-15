@@ -65,6 +65,8 @@ private:
 	float m_omf_accrue;
 	float m_omf_falloff;
 	bool m_omf_stop_at_end;
+	bool m_omf_merge;
+	bool m_omf_replace;
 	bool m_omf_has_motion_marks;
 	struct omf_mark {
 		std::string name;

@@ -120,7 +120,7 @@ global proc int xray_re_ogf_export_options(string $parent, string $action, strin
 			if ($mode == $modes[$i]) radioCollection -edit -select ("ixrayOgf_" + $modes[$i]) "ixrayOgfSmoothing";
 		optionMenu -label "Maximum bone influences" "ixrayOgfInfluences";
 		menuItem -label "2 (SoC / CS / CoP)";
-		menuItem -label "4 (CS / CoP / IX-Ray)";
+		menuItem -label "4 (CS / CoP)";
 		optionMenu -edit -select (($influences == 2) ? 1 : 2) "ixrayOgfInfluences";
 		text -label "OMF references" -align "left";
 		textField -width 440 -text $refs -changeCommand "ixrayOgfSaveMotionRefs" -textChangedCommand "ixrayOgfSaveMotionRefs" "ixrayOgfMotionRefs";
@@ -172,6 +172,8 @@ global proc ixrayOmfSaveSceneSettings() {
 	float $accrue = `floatFieldGrp -q -value1 ixrayOmfAccrue`;
 	float $falloff = `floatFieldGrp -q -value1 ixrayOmfFalloff`;
 	int $stopAtEnd = `checkBox -q -value ixrayOmfStopAtEnd`;
+	int $merge = `checkBox -q -value ixrayOmfMerge`;
+	int $replace = `checkBox -q -value ixrayOmfReplace`;
 	int $hasMotionMarks = `checkBox -q -value ixrayOmfHasMotionMarks`;
 	string $marks = `textField -q -text ixrayOmfMarksData`;
 	fileInfo "ixrayOmfPositionPrecision" $precision;
@@ -180,6 +182,8 @@ global proc ixrayOmfSaveSceneSettings() {
 	fileInfo "ixrayOmfAccrue" $accrue;
 	fileInfo "ixrayOmfFalloff" $falloff;
 	fileInfo "ixrayOmfStopAtEnd" $stopAtEnd;
+	fileInfo "ixrayOmfMerge" $merge;
+	fileInfo "ixrayOmfReplace" $replace;
 	fileInfo "ixrayOmfHasMotionMarks" $hasMotionMarks;
 	fileInfo "ixrayOmfMarks" $marks;
 }
@@ -398,6 +402,8 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		float $accrue = 2.0;
 		float $falloff = 2.0;
 		int $stopAtEnd = 0;
+		int $merge = 0;
+		int $replace = 0;
 		int $hasMotionMarks = 0;
 		string $marks = `ixrayOmfSceneValue "ixrayOmfMarks" ""`;
 		string $scenePath = `file -q -sn`;
@@ -408,6 +414,8 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		$accrue = (float)`ixrayOmfSceneValue "ixrayOmfAccrue" "2"`;
 		$falloff = (float)`ixrayOmfSceneValue "ixrayOmfFalloff" "2"`;
 		$stopAtEnd = (int)`ixrayOmfSceneValue "ixrayOmfStopAtEnd" "0"`;
+		$merge = (int)`ixrayOmfSceneValue "ixrayOmfMerge" "0"`;
+		$replace = (int)`ixrayOmfSceneValue "ixrayOmfReplace" "0"`;
 		$hasMotionMarks = (int)`ixrayOmfSceneValue "ixrayOmfHasMotionMarks" "0"`;
 		string $params[];
 		tokenize($options, ";", $params);
@@ -421,6 +429,8 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_accrue") $accrue = (float)$kv[1];
 			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_falloff") $falloff = (float)$kv[1];
 			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_stop_at_end") $stopAtEnd = ($kv[1] == "true");
+			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_merge") $merge = ($kv[1] == "true");
+			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_replace") $replace = ($kv[1] == "true");
 			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_has_motion_marks") $hasMotionMarks = ($kv[1] == "true");
 		}
 		optionMenu -label "Position key precision" -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfPositionPrecision";
@@ -433,6 +443,10 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		rowLayout -numberOfColumns 2 -columnWidth 1 220 -columnWidth 2 160;
 		floatFieldGrp -numberOfFields 1 -label "Speed" -value1 $speed -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfSpeed";
 		checkBox -label "Stop at end" -value $stopAtEnd -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfStopAtEnd";
+		setParent ..;
+		rowLayout -numberOfColumns 2 -columnWidth 1 220 -columnWidth 2 160;
+		checkBox -label "OMF merge" -value $merge -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfMerge";
+		checkBox -label "OMF replace" -value $replace -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfReplace";
 		setParent ..;
 		rowLayout -numberOfColumns 2 -columnWidth 1 220 -columnWidth 2 160;
 		floatFieldGrp -numberOfFields 1 -label "Accrue" -value1 $accrue -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfAccrue";
@@ -485,14 +499,16 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		float $accrue = `floatFieldGrp -q -value1 "ixrayOmfAccrue"`;
 		float $falloff = `floatFieldGrp -q -value1 "ixrayOmfFalloff"`;
 		int $stopAtEnd = `checkBox -q -value "ixrayOmfStopAtEnd"`;
+		int $merge = `checkBox -q -value "ixrayOmfMerge"`;
+		int $replace = `checkBox -q -value "ixrayOmfReplace"`;
 		int $hasMotionMarks = `checkBox -q -value "ixrayOmfHasMotionMarks"`;
 		string $marks = `textField -q -text "ixrayOmfMarksData"`;
 		if (`gmatch $motionName "*\"*"` || `gmatch $motionName "*;*"` || `gmatch $motionName "*=*"`) {
 			error "Motion name cannot contain quotes, semicolons or equals signs.";
 			return 0;
 		}
-		fileInfo "ixrayOmfPositionPrecision" $precision; fileInfo "ixrayOmfMotionName" $motionName; fileInfo "ixrayOmfSpeed" $speed; fileInfo "ixrayOmfAccrue" $accrue; fileInfo "ixrayOmfFalloff" $falloff; fileInfo "ixrayOmfStopAtEnd" $stopAtEnd; fileInfo "ixrayOmfHasMotionMarks" $hasMotionMarks; fileInfo "ixrayOmfMarks" $marks;
-		eval($callback + " \"omf_position_precision=" + $precision + ";omf_motion_name=" + $motionName + ";omf_speed=" + $speed + ";omf_accrue=" + $accrue + ";omf_falloff=" + $falloff + ";omf_stop_at_end=" + ($stopAtEnd ? "true" : "false") + ";omf_has_motion_marks=" + ($hasMotionMarks ? "true" : "false") + ";omf_marks=" + $marks + ";\"");
+		fileInfo "ixrayOmfPositionPrecision" $precision; fileInfo "ixrayOmfMotionName" $motionName; fileInfo "ixrayOmfSpeed" $speed; fileInfo "ixrayOmfAccrue" $accrue; fileInfo "ixrayOmfFalloff" $falloff; fileInfo "ixrayOmfStopAtEnd" $stopAtEnd; fileInfo "ixrayOmfMerge" $merge; fileInfo "ixrayOmfReplace" $replace; fileInfo "ixrayOmfHasMotionMarks" $hasMotionMarks; fileInfo "ixrayOmfMarks" $marks;
+		eval($callback + " \"omf_position_precision=" + $precision + ";omf_motion_name=" + $motionName + ";omf_speed=" + $speed + ";omf_accrue=" + $accrue + ";omf_falloff=" + $falloff + ";omf_stop_at_end=" + ($stopAtEnd ? "true" : "false") + ";omf_merge=" + ($merge ? "true" : "false") + ";omf_replace=" + ($replace ? "true" : "false") + ";omf_has_motion_marks=" + ($hasMotionMarks ? "true" : "false") + ";omf_marks=" + $marks + ";\"");
 	}
 	return 1;
 }
@@ -531,7 +547,7 @@ global proc int xray_re_object_export_options(string $parent, string $action, st
 				$influences = `optionVar -q "ixraySklObjectInfluences"`;
 			optionMenu -label "Maximum bone influences" "ixraySklObjectInfluences";
 			menuItem -label "2 (SoC / CS / CoP)";
-			menuItem -label "4 (CS / CoP / IX-Ray)";
+			menuItem -label "4 (CS / CoP)";
 			optionMenu -edit -select (($influences == 2) ? 1 : 2) "ixraySklObjectInfluences";
 		}
 

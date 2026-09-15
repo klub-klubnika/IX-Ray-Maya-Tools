@@ -45,19 +45,19 @@ const char PLUGIN_VENDOR[] = "ZENOBIAN mod team, RedPython, Ray Of Hope, ForserX
 const char PLUGIN_VERSION[] = __DATE__;
 const char BUILD_DATE[] = __DATE__ " at " __TIME__;
 
-const MString dm_reader("IX-Ray dm game detail object import");
-const MString object_reader("IX-Ray object import");
-const MString object_writer("IX-Ray object export");
-const MString skl_object_writer("IX-Ray object skeletal export");
-const MString ogf_reader("IX-Ray ogf game object import");
-const MString ogf_writer("IX-Ray ogf skeletal export");
-const MString omf_reader("IX-Ray omf skeletal motions import");
-const MString omf_writer("IX-Ray omf skeletal export");
-const MString skl_reader("IX-Ray skl skeletal motion import");
-const MString skl_writer("IX-Ray skl skeletal motion export");
-const MString skls_reader("IX-Ray skls skeletal motions import");
-const MString anm_reader("IX-Ray anm camera motion import");
-const MString anm_writer("IX-Ray anm camera motion export");
+const MString dm_reader("DM import");
+const MString object_reader("Object import");
+const MString object_writer("Object export");
+const MString skl_object_writer("Object skeletal export");
+const MString ogf_reader("OGF import");
+const MString ogf_writer("OGF export");
+const MString omf_reader("OMF import");
+const MString omf_writer("OMF export");
+const MString skl_reader("SKL import");
+const MString skl_writer("SKL export");
+const MString skls_reader("SKLS import");
+const MString anm_reader("ANM import");
+const MString anm_writer("ANM export");
 
 class maya_dm_reader: public MPxFileTranslator
 {

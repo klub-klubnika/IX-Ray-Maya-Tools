@@ -349,7 +349,7 @@ def _fill(joint):
 		cmds.text(label="Updating IX-Ray bone...")
 		return
 	if not cmds.attributeQuery("xrayBoneVersion", node=joint, exists=True):
-		cmds.button(label="Add IX-Ray Bone Parameters", command=partial(_initialize_bone, joint))
+		cmds.button(label="Add Bone Parameters", command=partial(_initialize_bone, joint))
 		return
 	shape_type = cmds.getAttr(joint + ".xrayShapeType")
 	joint_type = cmds.getAttr(joint + ".xrayJointType")
