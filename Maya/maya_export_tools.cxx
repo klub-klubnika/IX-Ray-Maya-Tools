@@ -45,8 +45,6 @@
 #include "xr_utils.h"
 #include "xr_obj_motion.h"
 #include "xr_ogf_format.h"
-#include "xr_file_system.h"
-#include "xr_reader.h"
 #include "xr_writer.h"
 #include "xr_sdk_version.h"
 
@@ -200,89 +198,6 @@ static void write_omf_bone_keys(xr_writer& writer, const std::vector<omf_sample>
 	extent.mul(1.f / scale);
 	writer.w_fvector3(extent);
 	writer.w_fvector3(center);
-}
-
-struct omf_existing_motion {
-	std::string name;
-	std::vector<uint8_t> keys;
-	std::vector<uint8_t> params;
-};
-
-struct omf_existing_data {
-	std::vector<uint8_t> params_header;
-	std::vector<omf_existing_motion> motions;
-};
-
-static bool load_omf_for_merge(const char* path, const std::vector<std::string>& expected_bones,
-	omf_existing_data& result, std::string& error)
-{
-	xr_file_system& fs = xr_file_system::instance();
-	xr_reader* file = fs.r_open(path);
-	if (!file) return true; // No file yet: regular export creates it.
-	xr_reader* params = file->open_chunk(OGF4_S_SMPARAMS);
-	xr_reader* motions = file->open_chunk(OGF4_S_MOTIONS);
-	if (!params || !motions) {
-		if (params) file->close_chunk(params);
-		if (motions) file->close_chunk(motions);
-		fs.r_close(file);
-		error = "existing file is not a supported OMF";
-		return false;
-	}
-
-	const uint16_t version = params->r_u16();
-	if (version != OGF4_S_SMPARAMS_VERSION_4) {
-		file->close_chunk(params); file->close_chunk(motions); fs.r_close(file);
-		error = "existing OMF uses an unsupported parameters version";
-		return false;
-	}
-
-	std::vector<std::string> file_bones;
-	const uint16_t partition_count = params->r_u16();
-	for (uint16_t partition = 0; partition != partition_count; ++partition) {
-		std::string partition_name; params->r_sz(partition_name);
-		const uint16_t bone_count = params->r_u16();
-		for (uint16_t bone = 0; bone != bone_count; ++bone) {
-			std::string bone_name; params->r_sz(bone_name);
-			params->r_u32();
-			if (partition == 0) file_bones.push_back(bone_name);
-		}
-	}
-	if (file_bones != expected_bones) {
-		file->close_chunk(params); file->close_chunk(motions); fs.r_close(file);
-		error = "existing OMF has a different bone order";
-		return false;
-	}
-
-	const size_t header_size = params->tell();
-	result.params_header.assign(static_cast<const uint8_t*>(params->data()),
-		static_cast<const uint8_t*>(params->data()) + header_size);
-	const uint16_t motion_count = params->r_u16();
-	for (uint16_t index = 0; index != motion_count; ++index) {
-		omf_existing_motion motion;
-		const size_t param_start = params->tell();
-		params->r_sz(motion.name);
-		params->advance(sizeof(uint32_t) + sizeof(uint16_t) * 2 + sizeof(float) * 4);
-		const uint32_t marks_count = params->r_u32();
-		for (uint32_t mark = 0; mark != marks_count; ++mark) {
-			std::string mark_name; params->r_s(mark_name);
-			params->advance(size_t(params->r_u32()) * sizeof(float) * 2);
-		}
-		const size_t param_end = params->tell();
-		motion.params.assign(static_cast<const uint8_t*>(params->data()) + param_start,
-			static_cast<const uint8_t*>(params->data()) + param_end);
-		xr_reader* keys = motions->open_chunk(uint32_t(index) + 1);
-		if (!keys) {
-			file->close_chunk(params); file->close_chunk(motions); fs.r_close(file);
-			error = "existing OMF is missing motion keys";
-			return false;
-		}
-		motion.keys.assign(static_cast<const uint8_t*>(keys->data()),
-			static_cast<const uint8_t*>(keys->data()) + keys->size());
-		motions->close_chunk(keys);
-		result.motions.push_back(std::move(motion));
-	}
-	file->close_chunk(params); file->close_chunk(motions); fs.r_close(file);
-	return true;
 }
 
 } // namespace
@@ -1578,32 +1493,10 @@ MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
 	char motion_name[_MAX_FNAME];
 	_splitpath_s(path, NULL, 0, NULL, 0, motion_name, sizeof(motion_name), NULL, 0);
 	const std::string exported_motion_name = m_omf_motion_name.empty() ? motion_name : m_omf_motion_name;
-	std::vector<std::string> ordered_bone_names;
-	ordered_bone_names.reserve(bone_order.size());
-	for (unsigned index: bone_order) ordered_bone_names.push_back(bone_names[index]);
-	omf_existing_data existing;
-	if (m_omf_merge) {
-		std::string merge_error;
-		if (!load_omf_for_merge(path, ordered_bone_names, existing, merge_error)) {
-			MGlobal::displayError(MString("IX-Ray: cannot merge OMF: ") + merge_error.c_str());
-			return MS::kFailure;
-		}
-		if (m_omf_replace) {
-			existing.motions.erase(std::remove_if(existing.motions.begin(), existing.motions.end(),
-				[&exported_motion_name](const omf_existing_motion& motion) { return motion.name == exported_motion_name; }),
-				existing.motions.end());
-		}
-	}
 	xr_memory_writer writer;
 	writer.open_chunk(OGF4_S_MOTIONS);
-	writer.open_chunk(0); writer.w_u32(uint32_t(existing.motions.size() + 1)); writer.close_chunk();
-	uint32_t motion_index = 1;
-	for (const omf_existing_motion& motion: existing.motions) {
-		writer.open_chunk(motion_index++);
-		writer.w_raw(motion.keys.data(), motion.keys.size());
-		writer.close_chunk();
-	}
-	writer.open_chunk(motion_index);
+	writer.open_chunk(0); writer.w_u32(1); writer.close_chunk();
+	writer.open_chunk(1);
 	writer.w_sz(exported_motion_name);
 	writer.w_u32(frame_count);
 	for (unsigned index: bone_order) write_omf_bone_keys(writer, samples[index], m_omf_position_precision);
@@ -1611,21 +1504,15 @@ MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
 	writer.close_chunk();
 
 	writer.open_chunk(OGF4_S_SMPARAMS);
-	if (!existing.params_header.empty()) {
-		writer.w_raw(existing.params_header.data(), existing.params_header.size());
-	} else {
-		writer.w_u16(OGF4_S_SMPARAMS_VERSION_4);
-		writer.w_u16(1);
-		writer.w_sz("default");
-		writer.w_size_u16(bone_names.size());
-		for (size_t i = 0; i != bone_order.size(); ++i) {
-			writer.w_sz(bone_names[bone_order[i]]);
-			writer.w_u32(uint32_t(i));
-		}
+	writer.w_u16(OGF4_S_SMPARAMS_VERSION_4);
+	writer.w_u16(1);
+	writer.w_sz("default");
+	writer.w_size_u16(bone_names.size());
+	for (size_t i = 0; i != bone_order.size(); ++i) {
+		writer.w_sz(bone_names[bone_order[i]]);
+		writer.w_u32(uint32_t(i));
 	}
-	writer.w_size_u16(existing.motions.size() + 1);
-	for (const omf_existing_motion& motion: existing.motions)
-		writer.w_raw(motion.params.data(), motion.params.size());
+	writer.w_u16(1);
 	writer.w_sz(exported_motion_name);
 	writer.w_u32(m_omf_stop_at_end ? 0x2u : 0u);
 	writer.w_u16(ALL_PARTITIONS);
@@ -1735,8 +1622,6 @@ void maya_export_tools::set_default_options(void)
 	m_omf_accrue = 2.f;
 	m_omf_falloff = 2.f;
 	m_omf_stop_at_end = false;
-	m_omf_merge = false;
-	m_omf_replace = false;
 	m_omf_has_motion_marks = false;
 	m_omf_marks.clear();
 }
@@ -1793,8 +1678,6 @@ MStatus maya_export_tools::parse_options(const MString& options)
 		else if (key_value[0] == "omf_accrue") m_omf_accrue = key_value[1].asFloat();
 		else if (key_value[0] == "omf_falloff") m_omf_falloff = key_value[1].asFloat();
 		else if (key_value[0] == "omf_stop_at_end") m_omf_stop_at_end = key_value[1] == "true";
-		else if (key_value[0] == "omf_merge") m_omf_merge = key_value[1] == "true";
-		else if (key_value[0] == "omf_replace") m_omf_replace = key_value[1] == "true";
 		else if (key_value[0] == "omf_has_motion_marks") m_omf_has_motion_marks = key_value[1] == "true";
 		else if (key_value[0] == "omf_marks") {
 			m_omf_marks.clear();
