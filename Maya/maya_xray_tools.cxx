@@ -1,14 +1,19 @@
 #define NOMINMAX
+#include <windows.h>
 #include <cstring>
 #include <algorithm>
 #include <map>
+#include <string>
+#include <vector>
 #include <maya/MTypes.h>
 #if MAYA_API_VERSION >= 20180000 && MAYA_API_VERSION <= 20190200
 #include <maya/MCppCompat.h>
 #endif
 #include <maya/MGlobal.h>
 #include <maya/MFnPlugin.h>
+#include <maya/MPxCommand.h>
 #include <maya/MPxFileTranslator.h>
+#include <maya/MStringArray.h>
 #include <maya/MFnTransform.h>
 #include <maya/MFnAnimCurve.h>
 #include <maya/MFnDependencyNode.h>
@@ -58,6 +63,93 @@ const MString skl_writer("SKL export");
 const MString skls_reader("SKLS import");
 const MString anm_reader("ANM import");
 const MString anm_writer("ANM export");
+
+static std::string plugin_sibling_path(const void* address, const char* file_name)
+{
+	HMODULE module = 0;
+	char module_path[MAX_PATH];
+	if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+		GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCSTR>(address), &module)
+		|| !GetModuleFileNameA(module, module_path, MAX_PATH))
+		return std::string();
+	std::string path(module_path);
+	const std::string::size_type slash = path.find_last_of("\\/");
+	return slash == std::string::npos ? std::string() : path.substr(0, slash + 1) + file_name;
+}
+
+static bool append_with_omf_editor(const std::string& editor_path, const char* target_path, const char* exported_path, bool replace)
+{
+	std::string command = "\"" + editor_path + "\" " + (replace ? "--replace" : "--append")
+		+ " \"" + target_path + "\" \"" + exported_path + "\"";
+	std::vector<char> command_line(command.begin(), command.end());
+	command_line.push_back('\0');
+	STARTUPINFOA startup = {};
+	PROCESS_INFORMATION process = {};
+	startup.cb = sizeof(startup);
+	if (!CreateProcessA(editor_path.c_str(), command_line.data(), 0, 0, FALSE, CREATE_NO_WINDOW,
+		0, 0, &startup, &process))
+		return false;
+	WaitForSingleObject(process.hProcess, INFINITE);
+	DWORD exit_code = 1;
+	GetExitCodeProcess(process.hProcess, &exit_code);
+	CloseHandle(process.hThread);
+	CloseHandle(process.hProcess);
+	return exit_code == 0;
+}
+
+class maya_export_selection_to_existing_omf: public MPxCommand
+{
+public:
+	MStatus doIt(const MArgList&) override
+	{
+		MStringArray paths;
+		if (MGlobal::executeCommand("fileDialog2 -fileMode 1 -fileFilter \"OMF files (*.omf)\" "
+			"-caption \"IX-Ray: export selection into existing OMF\" -okCaption \"Append\"", paths, false) != MS::kSuccess
+			|| paths.length() == 0)
+			return MS::kSuccess;
+		const char* target_path = paths[0].asChar();
+		if (GetFileAttributesA(target_path) == INVALID_FILE_ATTRIBUTES) {
+			MGlobal::displayError("IX-Ray: select an existing OMF.");
+			return MS::kFailure;
+		}
+		const std::string editor_path = plugin_sibling_path(
+			reinterpret_cast<const void*>(&maya_export_selection_to_existing_omf::creator), "OMF_Editor.exe");
+		if (editor_path.empty() || GetFileAttributesA(editor_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+			MGlobal::displayError("IX-Ray: place OMF_Editor.exe next to the Maya plugin (.mll).");
+			return MS::kFailure;
+		}
+
+		char temp_folder[MAX_PATH];
+		char exported_path[MAX_PATH];
+		if (!GetTempPathA(MAX_PATH, temp_folder) || !GetTempFileNameA(temp_folder, "ixr", 0, exported_path)) {
+			MGlobal::displayError("IX-Ray: cannot create a temporary OMF path.");
+			return MS::kFailure;
+		}
+		DeleteFileA(exported_path);
+
+		MString options;
+		MStringArray motion_name;
+		if (MGlobal::executeCommand("fileInfo -q \"ixrayOmfMotionName\"", motion_name, false) == MS::kSuccess
+			&& motion_name.length() > 0 && motion_name[0].length() > 0)
+			options = MString("omf_motion_name=") + motion_name[0] + ";";
+		maya_export_tools tools(options);
+		const MStatus export_status = tools.export_omf(exported_path, true);
+		if (export_status != MS::kSuccess) {
+			DeleteFileA(exported_path);
+			return export_status;
+		}
+		const bool merged = append_with_omf_editor(editor_path, target_path, exported_path, false);
+		DeleteFileA(exported_path);
+		if (!merged) {
+			MGlobal::displayError("IX-Ray: OMF Editor could not append the animation.");
+			return MS::kFailure;
+		}
+		MGlobal::displayInfo(MString("IX-Ray: animation appended to ") + target_path);
+		return MS::kSuccess;
+	}
+
+	static void* creator() { return new maya_export_selection_to_existing_omf; }
+};
 
 class maya_dm_reader: public MPxFileTranslator
 {
@@ -154,7 +246,56 @@ public:
 	MStatus writer(const MFileObject& file, const MString& options, FileAccessMode mode) override {
 		if (mode != kExportAccessMode && mode != kExportActiveAccessMode && mode != kSaveAccessMode)
 			return MS::kFailure;
-		return maya_export_tools(options).export_omf(file.resolvedFullName().asChar(), mode == kExportActiveAccessMode);
+		const MString target_path = file.resolvedFullName();
+		const char* target = target_path.asChar();
+		bool merge = std::string(options.asChar()).find("omf_merge=true") != std::string::npos;
+		bool replace = std::string(options.asChar()).find("omf_replace=true") != std::string::npos;
+		MStringArray saved_merge;
+		if (MGlobal::executeCommand("fileInfo -q \"ixrayOmfMerge\"", saved_merge, false) == MS::kSuccess
+			&& saved_merge.length() > 0)
+			merge = saved_merge[0] == "1" || saved_merge[0] == "true";
+		MStringArray saved_replace;
+		if (MGlobal::executeCommand("fileInfo -q \"ixrayOmfReplace\"", saved_replace, false) == MS::kSuccess
+			&& saved_replace.length() > 0)
+			replace = saved_replace[0] == "1" || saved_replace[0] == "true";
+		merge = merge || replace;
+		if (!merge)
+			return maya_export_tools(options).export_omf(target, mode == kExportActiveAccessMode);
+		MStringArray merge_sources;
+		if (MGlobal::executeCommand("fileInfo -q \"ixrayOmfMergeSource\"", merge_sources, false) != MS::kSuccess
+			|| merge_sources.length() == 0 || merge_sources[0].length() == 0) {
+			MStringArray selected_source;
+			MGlobal::executeCommand("fileDialog2 -fileMode 1 -fileFilter \"OMF files (*.omf)\" "
+				"-caption \"Select existing OMF to merge\" -okCaption \"Merge\"", selected_source, false);
+			if (selected_source.length() == 0) {
+				MGlobal::displayError("IX-Ray: merge was cancelled; no existing OMF was selected.");
+				return MS::kFailure;
+			}
+			merge_sources.append(selected_source[0]);
+			MGlobal::executeCommand(MString("fileInfo \"ixrayOmfMergeSource\" \"") + selected_source[0] + "\"", false);
+		}
+		const char* merge_source = merge_sources[0].asChar();
+
+		const std::string editor = plugin_sibling_path(reinterpret_cast<const void*>(&creator), "OMF_Editor.exe");
+		if (editor.empty() || GetFileAttributesA(editor.c_str()) == INVALID_FILE_ATTRIBUTES) {
+			MGlobal::displayError("IX-Ray: OMF_Editor.exe must be next to the .mll file.");
+			return MS::kFailure;
+		}
+		char folder[MAX_PATH], original[MAX_PATH], exported[MAX_PATH];
+		if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "ixo", 0, original)
+			|| !GetTempFileNameA(folder, "ixn", 0, exported)) return MS::kFailure;
+		DeleteFileA(original); DeleteFileA(exported);
+		if (!CopyFileA(merge_source, original, FALSE)) {
+			MGlobal::displayError("IX-Ray: cannot read the selected existing OMF.");
+			return MS::kFailure;
+		}
+		MGlobal::displayInfo(MString("IX-Ray: starting OMF Editor merge for ") + target);
+		const MStatus status = maya_export_tools(options).export_omf(exported, mode == kExportActiveAccessMode);
+		const bool completed = status == MS::kSuccess && append_with_omf_editor(editor, original, exported, replace)
+			&& CopyFileA(original, merge_source, FALSE);
+		if (!completed) MGlobal::displayError("IX-Ray: failed to merge the exported animation.");
+		DeleteFileA(original); DeleteFileA((std::string(original) + ".bak").c_str()); DeleteFileA(exported);
+		return completed ? MS::kSuccess : MS::kFailure;
 	}
 	bool haveWriteMethod() const override { return true; }
 	MString defaultExtension() const override { return "omf"; }
@@ -971,6 +1112,13 @@ MStatus initializePlugin(MObject obj)
 	MStatus status;
 
 	MFnPlugin plugin_fn(obj, PLUGIN_VENDOR, PLUGIN_VERSION);
+	// Remove this obsolete action even if an older build gave it another UI name.
+	if (MGlobal::mayaState() != MGlobal::kBatch)
+		MGlobal::executeCommand(
+			"if (`menuItem -exists ixrayExportSelectionToExistingOmfMenuItem`) deleteUI ixrayExportSelectionToExistingOmfMenuItem; "
+			"string $ixrayMenus[] = `lsUI -menus`; for ($ixrayMenu in $ixrayMenus) { "
+			"string $ixrayItems[] = `menu -q -itemArray $ixrayMenu`; for ($ixrayItem in $ixrayItems) { "
+			"if (`menuItem -exists $ixrayItem` && `menuItem -q -label $ixrayItem` == \"Export Selection into existing OMF...\") deleteUI $ixrayItem; } }", false);
 
 	MStatus execute_status = MGlobal::executeCommand(xray_re_object_options_script, true);
 	if (execute_status != MS::kSuccess)
@@ -1066,6 +1214,8 @@ MStatus initializePlugin(MObject obj)
 MStatus uninitializePlugin(MObject obj)
 {
 	uninitialize_bone_collision();
+	if (MGlobal::mayaState() != MGlobal::kBatch)
+		MGlobal::executeCommand("if (`menuItem -exists ixrayExportSelectionToExistingOmfMenuItem`) deleteUI ixrayExportSelectionToExistingOmfMenuItem;", false);
 	MFnPlugin plugin_fn(obj);
 	plugin_fn.deregisterCommand("ixrayMotionList");
 	plugin_fn.deregisterCommand("ixrayMotionLoad");
