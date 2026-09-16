@@ -855,14 +855,16 @@ static MStatus write_motion_keys(const maya_object_map& joints, const xr_skl_mot
 		return MS::kFailure;
 	}
 	const char* attrs[] = { "tx", "ty", "tz", "rx", "ry", "rz" };
-	// Validate every destination before editing the scene.
+	// Validate only destinations that exist in the selected Maya skeleton.
+	// OMFs can contain helper bones that are absent in a lighter target rig.
+	unsigned skipped_bones = 0;
 	for (const auto* bone : motion->bone_motions())
 	{
 		auto found = joints.find(bone->name());
 		if (found == joints.end())
 		{
-			MGlobal::displayError(MString("IX-Ray: selected skeleton is missing bone ") + bone->name().c_str());
-			return MS::kFailure;
+			++skipped_bones;
+			continue;
 		}
 		MFnDependencyNode node(found->second);
 		for (const char* attr : attrs)
@@ -877,12 +879,17 @@ static MStatus write_motion_keys(const maya_object_map& joints, const xr_skl_mot
 			}
 		}
 	}
+	if (skipped_bones)
+		MGlobal::displayWarning(MString("IX-Ray: skipped ") + int(skipped_bones)
+			+ " OMF bone(s) that are absent in the selected skeleton.");
 	const double frame_step = MTime(time_stretch / motion->fps(), MTime::kSeconds).as(MTime::uiUnit());
 	const double last = start_frame + (motion->frame_end() - motion->frame_start() - 1) * frame_step;
 	if (end_frame) *end_frame = last;
 	for (const auto* bone : motion->bone_motions())
 	{
-		MString path = MFnDagNode(joints.find(bone->name())->second).fullPathName();
+		auto found = joints.find(bone->name());
+		if (found == joints.end()) continue;
+		MString path = MFnDagNode(found->second).fullPathName();
 		MString command("cutKey -clear -time \"");
 		command += start_frame;
 		command += ":";
@@ -895,7 +902,7 @@ static MStatus write_motion_keys(const maya_object_map& joints, const xr_skl_mot
 			fvector3 offset, rotation;
 			bone->evaluate(float(frame / double(motion->fps())), offset, rotation);
 			MEulerRotation euler(-rotation.x, -rotation.y, rotation.z, MEulerRotation::kZXY);
-			MFnDependencyNode node(joints.find(bone->name())->second);
+			MFnDependencyNode node(found->second);
 			euler.reorderIt(static_cast<MEulerRotation::RotationOrder>(node.findPlug("rotateOrder", true).asShort()));
 			double values[] = {
 				MDistance(offset.x * scale_factor, MDistance::kMeters).as(MDistance::uiUnit()),
