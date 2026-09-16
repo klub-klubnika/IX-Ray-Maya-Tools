@@ -885,6 +885,8 @@ static MStatus write_motion_keys(const maya_object_map& joints, const xr_skl_mot
 	const double frame_step = MTime(time_stretch / motion->fps(), MTime::kSeconds).as(MTime::uiUnit());
 	const double last = start_frame + (motion->frame_end() - motion->frame_start() - 1) * frame_step;
 	if (end_frame) *end_frame = last;
+	MString imported_channels;
+	MString rotation_curves;
 	for (const auto* bone : motion->bone_motions())
 	{
 		auto found = joints.find(bone->name());
@@ -921,7 +923,23 @@ static MStatus write_motion_keys(const maya_object_map& joints, const xr_skl_mot
 		}
 		MStatus status = MGlobal::executeCommand(command, false, true);
 		if (!status) return status;
+		for (const char* attr : attrs)
+			imported_channels += " \"" + path + "." + attr + "\"";
+		for (unsigned axis = 3; axis < 6; ++axis)
+		{
+			MPlug plug = MFnDependencyNode(found->second).findPlug(attrs[axis], true);
+			MPlugArray curves;
+			plug.connectedTo(curves, true, false);
+			if (curves.length() && curves[0].node().hasFn(MFn::kAnimCurve))
+				rotation_curves += " \"" + MFnDependencyNode(curves[0].node()).name() + "\"";
+		}
 	}
+	// Preserve exact imported samples and eliminate Euler rotation flips.
+	if (imported_channels.length())
+		MGlobal::executeCommand(MString("keyTangent -e -time ") + start_frame + ":" + last
+			+ " -itt linear -ott linear" + imported_channels + ";", false, true);
+	if (rotation_curves.length())
+		MGlobal::executeCommand(MString("filterCurve -f euler") + rotation_curves + ";", false, true);
 	return MS::kSuccess;
 }
 
