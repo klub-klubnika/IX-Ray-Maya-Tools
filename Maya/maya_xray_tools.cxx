@@ -5,6 +5,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <fstream>
 #include <maya/MTypes.h>
 #if MAYA_API_VERSION >= 20180000 && MAYA_API_VERSION <= 20190200
 #include <maya/MCppCompat.h>
@@ -63,6 +64,24 @@ const MString skl_writer("SKL export");
 const MString skls_reader("SKLS import");
 const MString anm_reader("ANM import");
 const MString anm_writer("ANM export");
+
+static std::string fsgame_data_path(const char* game_root)
+{
+	std::ifstream file(std::string(game_root) + "\\fsgame.ltx");
+	std::string line;
+	while (std::getline(file, line)) {
+		const size_t key = line.find("$game_data$");
+		const size_t equals = line.find('=');
+		const size_t value = line.rfind('|');
+		if (key == std::string::npos || equals == std::string::npos || value == std::string::npos) continue;
+		std::string path = line.substr(value + 1);
+		while (!path.empty() && (path.front() == ' ' || path.front() == '\t')) path.erase(0, 1);
+		while (!path.empty() && (path.back() == ' ' || path.back() == '\t' || path.back() == '\r')) path.pop_back();
+		if (!path.empty() && path.front() == '$') continue; // external alias: use default below
+		if (!path.empty()) return path;
+	}
+	return "gamedata\\";
+}
 
 static std::string plugin_sibling_path(const void* address, const char* file_name)
 {
@@ -1152,7 +1171,7 @@ MStatus initializePlugin(MObject obj)
 	}
 	else
 	{
-		fs.update_path(PA_GAME_DATA, game_root.asChar(), "gamedata\\");
+		fs.update_path(PA_GAME_DATA, game_root.asChar(), fsgame_data_path(game_root.asChar()));
 		fs.update_path("$ixr_addons$", game_root.asChar(), "ixr_addons\\");
 		fs.update_path(PA_GAME_CONFIG, PA_GAME_DATA, "configs\\");
 		fs.update_path(PA_GAME_TEXTURES, PA_GAME_DATA, "textures\\");

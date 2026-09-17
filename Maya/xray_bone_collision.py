@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from functools import partial
 
 import sys
+import os
 from maya import cmds, mel
 from maya.api import OpenMaya as om
 
@@ -501,6 +502,26 @@ def set_game_root(*_):
 	cmds.warning("IX-Ray: game working directory saved. Restart Maya for it to take effect")
 
 
+def show_game_paths(*_):
+	root = cmds.optionVar(q="ixrayGameRoot") if cmds.optionVar(exists="ixrayGameRoot") else ""
+	root = root.rstrip("\\/")
+	fsgame = os.path.join(root, "fsgame.ltx")
+	data = "gamedata"
+	if os.path.isfile(fsgame):
+		with open(fsgame, "r", encoding="utf-8", errors="ignore") as stream:
+			for line in stream:
+				if "$game_data$" in line and "|" in line:
+					candidate = line.rsplit("|", 1)[1].strip().strip("\\/")
+					if candidate and not candidate.startswith("$"):
+						data = candidate
+					break
+	game_data = os.path.join(root, data)
+	addons = os.path.join(root, "ixr_addons")
+	message = "Game Root:\n{0}\n\nfsgame.ltx: {1}\n\n$game_data$:\n{2}\n\n$ixr_addons$:\n{3}".format(
+		root or "<not set>", fsgame if os.path.isfile(fsgame) else "<not found>", game_data, addons)
+	cmds.confirmDialog(title="IX-Ray paths", message=message, button=["Close"], defaultButton="Close")
+
+
 def run_motion_browser(*_):
 	import xray_motion_browser
 	xray_motion_browser.show()
@@ -536,6 +557,7 @@ global proc ixrayBoneAEReplace(string $plug)
 	cmds.menuItem(parent=MENU, divider=True)
 	cmds.menuItem(parent=MENU, label="Moution Browser...", command=run_motion_browser)
 	cmds.menuItem(parent=MENU, label="Set Game Root...", command=set_game_root)
+	cmds.menuItem(parent=MENU, label="Show Game Paths...", command=show_game_paths)
 	_refresh_templates()
 
 
