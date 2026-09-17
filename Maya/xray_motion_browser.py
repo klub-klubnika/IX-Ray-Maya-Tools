@@ -16,6 +16,7 @@ WINDOW = "ixrayMotionWindow"
 _filter = None
 _target = []
 _motions = []
+_visible_indices = []
 _controls = {}
 _busy = False
 LIBRARY_ATTR = "ixrayMotionLibrary"
@@ -92,8 +93,13 @@ def _save_library():
 
 
 def _fill():
+    global _visible_indices
+    query = cmds.textFieldGrp(_controls["search"], query=True, text=True).strip().casefold() if "search" in _controls else ""
+    _visible_indices = [index for index, motion in enumerate(_motions)
+                        if not query or query in _display_name(motion).casefold()]
     cmds.textScrollList(_controls["list"], edit=True, removeAll=True)
-    for motion in _motions:
+    for index in _visible_indices:
+        motion = _motions[index]
         cmds.textScrollList(_controls["list"], edit=True,
                             append=_display_name(motion))
 
@@ -102,12 +108,21 @@ def _selected_indices():
     return cmds.textScrollList(_controls["list"], query=True, selectIndexedItem=True) or []
 
 
+def _selected_motion_indices():
+    return [_visible_indices[index - 1] for index in _selected_indices()
+            if 0 < index <= len(_visible_indices)]
+
+
+def _filter_changed(*_):
+    _fill()
+
+
 def rename_selected(*_):
-    indices = _selected_indices()
+    indices = _selected_motion_indices()
     if len(indices) != 1:
         cmds.warning("IX-Ray: select one animation to rename")
         return
-    motion = _motions[indices[0] - 1]
+    motion = _motions[indices[0]]
     result = cmds.promptDialog(title="Rename Animation", message="Name:",
                                text=_display_name(motion), button=("Rename", "Cancel"),
                                defaultButton="Rename", cancelButton="Cancel", dismissString="Cancel")
@@ -117,29 +132,28 @@ def rename_selected(*_):
     if not name:
         cmds.warning("IX-Ray: animation name cannot be empty")
         return
-    other = [item for index, item in enumerate(_motions) if index != indices[0] - 1]
+    other = [item for index, item in enumerate(_motions) if index != indices[0]]
     motion["display_name"] = _unique_display_name(other, name)
     _save_library()
     _fill()
-    cmds.textScrollList(_controls["list"], edit=True, selectIndexedItem=indices[0])
 
 
 def delete_selected(*_):
-    indices = _selected_indices()
+    indices = _selected_motion_indices()
     if not indices:
         cmds.warning("IX-Ray: select animations to delete")
         return
     for index in sorted(indices, reverse=True):
-        del _motions[index - 1]
+        del _motions[index]
     _save_library()
     _fill()
 
 
 def _remember_options(*_):
-    indices = _selected_indices()
+    indices = _selected_motion_indices()
     if indices:
         for key in ("scale", "stretch", "start"):
-            _motions[indices[0] - 1][key] = cmds.floatFieldGrp(_controls[key], query=True, value1=True)
+            _motions[indices[0]][key] = cmds.floatFieldGrp(_controls[key], query=True, value1=True)
         _save_library()
 
 
@@ -194,11 +208,11 @@ def pick_file(*_):
 
 
 def export_selected(*_):
-    indices = cmds.textScrollList(_controls["list"], query=True, selectIndexedItem=True) or []
+    indices = _selected_motion_indices()
     if not indices:
         cmds.warning("IX-Ray: select animations to export")
         return
-    motions = [_motions[index - 1] for index in indices]
+    motions = [_motions[index] for index in indices]
     filenames = []
     for motion in motions:
         name = _display_name(motion)
@@ -222,7 +236,7 @@ def export_selected(*_):
 
 def load_selected(*_, play=False):
     global _busy
-    indices = _selected_indices()
+    indices = _selected_motion_indices()
     if not indices:
         cmds.warning("IX-Ray: choose an animation")
         return
@@ -237,7 +251,7 @@ def load_selected(*_, play=False):
         return
     for key, value in zip(("scale", "stretch", "start"), values):
         cmds.optionVar(floatValue=("ixrayMotion_" + key, value))
-    motion = _motions[indices[0] - 1]
+    motion = _motions[indices[0]]
     path, name = motion["path"], motion["name"]
     if not os.path.isfile(path):
         cmds.warning("IX-Ray: animation source file is missing: " + path)
@@ -304,6 +318,7 @@ def show(paths=None, target=None):
     cmds.columnLayout(adjustableColumn=True, rowSpacing=6)
     _controls["target"] = cmds.text(label="", align="left")
     _controls["import"] = cmds.button(label="Get Animation File...", command=pick_file)
+    _controls["search"] = cmds.textFieldGrp(label="Search", textChangedCommand=_filter_changed)
     _controls["list"] = cmds.textScrollList(allowMultiSelection=True, height=260,
                                            deleteKeyCommand=delete_selected,
                                            doubleClickCommand=partial(load_selected, play=True))
@@ -311,7 +326,7 @@ def show(paths=None, target=None):
     cmds.menuItem(parent=menu, label="Rename", command=rename_selected)
     cmds.menuItem(parent=menu, label="Delete", command=delete_selected)
     cmds.button(label="Select All", command=lambda *_: cmds.textScrollList(
-        _controls["list"], edit=True, selectIndexedItem=list(range(1, len(_motions) + 1))) if _motions else None)
+        _controls["list"], edit=True, selectIndexedItem=list(range(1, len(_visible_indices) + 1))) if _visible_indices else None)
     cmds.button(label="Export Selected...", command=export_selected)
     for key, label, default in (("scale", "Scale Factor", 1.0),
                                 ("stretch", "Time Stretch", 1.0),
