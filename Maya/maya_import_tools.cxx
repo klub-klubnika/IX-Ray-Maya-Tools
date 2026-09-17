@@ -845,7 +845,7 @@ static MFnAnimCurve::InfinityType maya_infinity(uint8_t behaviour)
 }
 
 static MStatus write_motion_keys(const maya_object_map& joints, const xr_skl_motion* motion,
-		double scale_factor, double time_stretch, double start_frame, double* end_frame)
+		double scale_factor, double time_stretch, double start_frame, bool clear_existing_keys, double* end_frame)
 {
 	if (!std::isfinite(scale_factor) || scale_factor <= 0 ||
 		!std::isfinite(time_stretch) || time_stretch <= 0 ||
@@ -893,13 +893,16 @@ static MStatus write_motion_keys(const maya_object_map& joints, const xr_skl_mot
 		auto found = joints.find(bone->name());
 		if (found == joints.end()) continue;
 		MString path = MFnDagNode(found->second).fullPathName();
-		MString command("cutKey -clear -time \"");
-		command += start_frame;
-		command += ":";
-		command += last;
-		command += "\" -at tx -at ty -at tz -at rx -at ry -at rz \"";
-		command += path;
-		command += "\";";
+		MString command;
+		if (clear_existing_keys) {
+			command = "cutKey -clear -time \"";
+			command += start_frame;
+			command += ":";
+			command += last;
+			command += "\" -at tx -at ty -at tz -at rx -at ry -at rz \"";
+			command += path;
+			command += "\";";
+		}
 		for (int32_t frame = motion->frame_start(); frame < motion->frame_end(); ++frame)
 		{
 			fvector3 offset, rotation;
@@ -951,7 +954,7 @@ MStatus maya_import_tools::import_selected_motion(const xr_skl_motion* motion, d
 	if (selected.isEmpty())
 	{
 		if (!m_joints.empty())
-			return write_motion_keys(m_joints, motion, m_scale_factor, m_time_stretch, m_start_frame, end_frame);
+			return write_motion_keys(m_joints, motion, m_scale_factor, m_time_stretch, m_start_frame, m_clear_existing_keys, end_frame);
 		MGlobal::displayError("IX-Ray: no skeleton selected");
 		return MS::kFailure;
 	}
@@ -977,7 +980,7 @@ MStatus maya_import_tools::import_selected_motion(const xr_skl_motion* motion, d
 			m_joints[name] = joint;
 		}
 	}
-	return write_motion_keys(m_joints, motion, m_scale_factor, m_time_stretch, m_start_frame, end_frame);
+	return write_motion_keys(m_joints, motion, m_scale_factor, m_time_stretch, m_start_frame, m_clear_existing_keys, end_frame);
 }
 
 void maya_import_tools::set_default_options(void)
@@ -988,6 +991,7 @@ void maya_import_tools::set_default_options(void)
 	m_scale_factor = 1.0;
 	m_time_stretch = 1.0;
 	m_start_frame = 0.0;
+	m_clear_existing_keys = true;
 }
 
 MStatus maya_import_tools::parse_options(const MString& options)
@@ -1031,6 +1035,10 @@ MStatus maya_import_tools::parse_options(const MString& options)
 		else if (key_value[0] == "start_frame")
 		{
 			m_start_frame = key_value[1].asDouble();
+		}
+		else if (key_value[0] == "clear_existing_keys")
+		{
+			m_clear_existing_keys = key_value[1] == "true";
 		}
 	}
 

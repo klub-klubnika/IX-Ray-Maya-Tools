@@ -246,6 +246,7 @@ def load_selected(*_, play=False):
     target = _paths(_target)
     values = [cmds.floatFieldGrp(_controls[key], query=True, value1=True)
               for key in ("scale", "stretch", "start")]
+    clear_existing = cmds.checkBox(_controls["clear_existing"], query=True, value=True)
     if not all(math.isfinite(v) for v in values) or min(values[:2]) <= 0:
         cmds.warning("IX-Ray: Scale Factor and Time Stretch must be positive")
         return
@@ -263,7 +264,8 @@ def load_selected(*_, play=False):
     try:
         cmds.select(target, replace=True)
         end = cmds.ixrayMotionLoad(path, name,
-                            "scale_factor={};time_stretch={};start_frame={}".format(*values),
+                            "scale_factor={};time_stretch={};start_frame={};clear_existing_keys={}".format(
+                                *values, "true" if clear_existing else "false"),
                                  motion.get("source_index", 0))
         _remember_options()
     finally:
@@ -333,6 +335,9 @@ def show(paths=None, target=None):
                                 ("start", "Start Frame", 0.0)):
         _controls[key] = cmds.floatFieldGrp(numberOfFields=1, label=label,
                                           value1=_option("ixrayMotion_" + key, default))
+    _controls["clear_existing"] = cmds.checkBox(label="Remove existing keys in import range",
+                                                  value=_option("ixrayMotion_clearExisting", True),
+                                                  changeCommand=lambda value: cmds.optionVar(intValue=("ixrayMotion_clearExisting", int(value))))
     cmds.button(label="Load Motion", command=load_selected)
     cmds.scriptJob(event=("SelectionChanged", _selection_changed), parent=WINDOW)
     cmds.showWindow(WINDOW)

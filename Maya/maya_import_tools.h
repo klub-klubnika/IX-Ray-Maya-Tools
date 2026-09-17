@@ -65,6 +65,7 @@ private:
 	double		m_scale_factor;
 	double		m_time_stretch;
 	double		m_start_frame;
+	bool		m_clear_existing_keys;
 };
 
 #endif

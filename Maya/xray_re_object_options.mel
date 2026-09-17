@@ -440,15 +440,18 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		for ($i = 0; $i < size($params); ++$i) {
 			string $kv[];
 			tokenize($params[$i], "=", $kv);
-			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_position_precision") $precision = (int)$kv[1];
-			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_motion_name") $motionName = $kv[1];
-			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_speed") $speed = (float)$kv[1];
-			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_accrue") $accrue = (float)$kv[1];
-			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_falloff") $falloff = (float)$kv[1];
-			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_stop_at_end") $stopAtEnd = ($kv[1] == "true");
-			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_merge") $merge = ($kv[1] == "true");
-			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_replace") $replace = ($kv[1] == "true");
-			if ($scenePath != "" && size($kv) >= 2 && $kv[0] == "omf_has_motion_marks") $hasMotionMarks = ($kv[1] == "true");
+			// File translator options are cached by Maya across scenes.  A saved
+			// scene must always use its own fileInfo values; use the cache only
+			// before the first save, when the scene has no identity yet.
+			if ($scenePath == "" && size($kv) >= 2 && $kv[0] == "omf_position_precision") $precision = (int)$kv[1];
+			if ($scenePath == "" && size($kv) >= 2 && $kv[0] == "omf_motion_name") $motionName = $kv[1];
+			if ($scenePath == "" && size($kv) >= 2 && $kv[0] == "omf_speed") $speed = (float)$kv[1];
+			if ($scenePath == "" && size($kv) >= 2 && $kv[0] == "omf_accrue") $accrue = (float)$kv[1];
+			if ($scenePath == "" && size($kv) >= 2 && $kv[0] == "omf_falloff") $falloff = (float)$kv[1];
+			if ($scenePath == "" && size($kv) >= 2 && $kv[0] == "omf_stop_at_end") $stopAtEnd = ($kv[1] == "true");
+			if ($scenePath == "" && size($kv) >= 2 && $kv[0] == "omf_merge") $merge = ($kv[1] == "true");
+			if ($scenePath == "" && size($kv) >= 2 && $kv[0] == "omf_replace") $replace = ($kv[1] == "true");
+			if ($scenePath == "" && size($kv) >= 2 && $kv[0] == "omf_has_motion_marks") $hasMotionMarks = ($kv[1] == "true");
 		}
 		optionMenu -label "Position key precision" -changeCommand "ixrayOmfSaveSceneSettings" "ixrayOmfPositionPrecision";
 		menuItem -label "8 bit";
