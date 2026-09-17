@@ -270,33 +270,34 @@ static MPlug get_free_plug(MFn::Type filter, const char* list_name)
 	return MPlug();
 }
 
-static std::string resolve_addon_texture(const std::string& name)
+static std::string resolve_addon_texture_recursive(const std::string& folder, const std::string& name)
 {
-	xr_file_system& fs = xr_file_system::instance();
-	const char* addons_root = fs.resolve_path("$ixr_addons$");
-	if (addons_root == 0)
-		return std::string();
+	std::string candidate = folder + "textures\\" + name;
+	if (xr_file_system::file_exist(candidate)) return candidate;
 	_finddata_t find_data;
-	intptr_t find_handle = _findfirst((std::string(addons_root) + "*").c_str(), &find_data);
+	intptr_t find_handle = _findfirst((folder + "*").c_str(), &find_data);
 	if (find_handle == intptr_t(-1))
 		return std::string();
-	std::string found;
 	while (true)
 	{
-		if (find_data.attrib & _A_SUBDIR)
+		if ((find_data.attrib & _A_SUBDIR) && std::strcmp(find_data.name, ".") != 0
+			&& std::strcmp(find_data.name, "..") != 0 && !(find_data.attrib & 0x400))
 		{
-			std::string candidate = std::string(addons_root) + find_data.name + "\\textures\\" + name;
-			if (xr_file_system::file_exist(candidate))
-			{
-				found = candidate;
-				break;
-			}
+			std::string found = resolve_addon_texture_recursive(folder + find_data.name + "\\", name);
+			if (!found.empty()) { _findclose(find_handle); return found; }
 		}
 		if (_findnext(find_handle, &find_data) != 0)
 			break;
 	}
 	_findclose(find_handle);
-	return found;
+	return std::string();
+}
+
+static std::string resolve_addon_texture(const std::string& name)
+{
+	xr_file_system& fs = xr_file_system::instance();
+	const char* addons_root = fs.resolve_path("$ixr_addons$");
+	return addons_root ? resolve_addon_texture_recursive(addons_root, name) : std::string();
 }
 
 static MObject create_texture(const std::string& texture, MStatus* return_status)
