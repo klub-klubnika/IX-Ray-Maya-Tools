@@ -190,7 +190,12 @@ global proc ixrayOmfSaveSceneSettings() {
 
 global proc ixrayOmfMarksEnabledChanged() {
 	int $enabled = `checkBox -q -value ixrayOmfHasMotionMarks`;
-	frameLayout -e -enable $enabled ixrayOmfMarksFrame;
+	if (`control -exists ixrayOmfMarksFrame`) frameLayout -e -enable $enabled ixrayOmfMarksFrame;
+	// Frame layouts do not re-enable children that were disabled while the
+	// frame was locked, so explicitly unlock the mark list and its actions.
+	if (`control -exists ixrayOmfMarksList`) textScrollList -e -enable $enabled ixrayOmfMarksList;
+	if (`control -exists ixrayOmfMarksAdd`) button -e -enable $enabled ixrayOmfMarksAdd;
+	if (`control -exists ixrayOmfMarksDelete`) button -e -enable $enabled ixrayOmfMarksDelete;
 	ixrayOmfSaveSceneSettings;
 }
 
@@ -481,8 +486,8 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		text -label "Mark" -align "left";
 		textScrollList -width 176 -height 68 -allowMultiSelection false -selectCommand "ixrayOmfMarksSelect" "ixrayOmfMarksList";
 		rowLayout -numberOfColumns 2 -adjustableColumn 1;
-		button -label "Add" -command "ixrayOmfMarksAdd";
-		button -label "Delete" -command "ixrayOmfMarksDelete";
+		button -label "Add" -enable $hasMotionMarks -command "ixrayOmfMarksAdd" "ixrayOmfMarksAdd";
+		button -label "Delete" -enable $hasMotionMarks -command "ixrayOmfMarksDelete" "ixrayOmfMarksDelete";
 		setParent ..;
 		setParent ..;
 		columnLayout -adj true;

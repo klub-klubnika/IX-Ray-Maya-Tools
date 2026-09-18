@@ -232,6 +232,27 @@ static std::string texture_path_from_file(const MString& file_path)
 	return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
+static std::string mel_string_literal(const MString& value)
+{
+	std::string result("\"");
+	for (const char* p = value.asUTF8(); *p; ++p) {
+		if (*p == '\\' || *p == '\"') result += '\\';
+		result += *p;
+	}
+	return result + "\"";
+}
+
+static MStatus assign_auto_material(MFnMesh& mesh_fn)
+{
+	const std::string mesh = mel_string_literal(mesh_fn.fullPathName());
+	const std::string text = std::string(
+		"string $ixrayAutoShader = `shadingNode -asShader lambert -name \"ixrayAutoMaterial\"`; ") +
+		"string $ixrayAutoSet = `sets -renderable true -noSurfaceShader true -empty -name ($ixrayAutoShader + \"SG\")`; "
+		"connectAttr -force ($ixrayAutoShader + \".outColor\") ($ixrayAutoSet + \".surfaceShader\"); "
+		"sets -e -forceElement $ixrayAutoSet " + mesh + ";";
+	return MGlobal::executeCommand(MString(text.c_str()), false, false);
+}
+
 static std::string normalize_omf_refs(std::string refs)
 {
 	std::string result;
@@ -742,8 +763,21 @@ xr_surface* maya_export_tools::create_surface(const char* surf_name, MFnSet& set
 	if (shader_obj.isNull())
 	{
 		msg("xray_re: can't find shader node for surface %s", surf_name);
-		MGlobal::displayError(MString("xray_re: can't find shader node for surface ") + surf_name);
+		MGlobal::displayWarning(MString("IX-Ray: surface '") + surf_name +
+			"' has no shader; exporting it with models\\model and no_texture.");
+		if (m_skeletal) surface->eshader() = "models\\model";
+		surface->texture() = "no_texture";
 		return surface;
+	}
+
+	// OGF requires an engine shader, while common Maya materials (Lambert,
+	// Blinn, Standard Surface) do not have IX-Ray attributes.  Use the same
+	// safe default as skeletal XRayMtl materials instead of rejecting an
+	// otherwise valid textured material.
+	if (m_skeletal && surface->eshader().empty()) {
+		surface->eshader() = "models\\model";
+		MGlobal::displayWarning(MString("IX-Ray: surface '") + surf_name +
+			"' has no engine shader; using models\\model for export.");
 	}
 
 	MFnDependencyNode shader_fn(shader_obj);
@@ -776,6 +810,11 @@ xr_surface* maya_export_tools::create_surface(const char* surf_name, MFnSet& set
 			break;
 		}
 	}
+	if (surface->texture().empty()) {
+		surface->texture() = "no_texture";
+		MGlobal::displayWarning(MString("IX-Ray: surface '") + surf_name +
+			"' has no texture; using no_texture for export.");
+	}
 	return surface;
 }
 
@@ -790,6 +829,17 @@ MStatus maya_export_tools::extract_surfaces(MFnMesh& mesh_fn, xr_surfmap_vec& su
 		MGlobal::displayError(MString("xray_re: can't get connected shaders for mesh ") +
 			mesh_fn.fullPathName().asChar());
 		return MS::kInvalidParameter;
+	}
+	bool missing_material = false;
+	for (unsigned i = 0; i < faces.length(); ++i)
+		missing_material = missing_material || faces[i] < 0;
+	if (missing_material) {
+		if (!assign_auto_material(mesh_fn)) {
+			MGlobal::displayError(MString("IX-Ray: cannot create a material for mesh ") + mesh_fn.fullPathName());
+			return MS::kFailure;
+		}
+		status = mesh_fn.getConnectedShaders(0, shading_groups, faces);
+		if (!status || shading_groups.length() == 0) return MS::kFailure;
 	}
 	surfmaps.resize(shading_groups.length());
 	for (unsigned i = 0; i < faces.length(); ++i) {
