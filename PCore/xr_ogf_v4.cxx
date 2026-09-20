@@ -293,18 +293,26 @@ void xr_ogf_v4::bone_motion_io::import(xr_reader& r, uint_fast32_t num_keys)
 	create_envelopes();
 
 	unsigned flags = r.r_u8();
+	const bool f32_keys = (flags & KPF_F32) != 0;
 
 	if (flags & KPF_R_ABSENT) {
-		insert_key(0, r.skip<ogf_key_qr>());
+		if (f32_keys) insert_key(0, r.skip<ogf_key_qr_f32>());
+		else insert_key(0, r.skip<ogf_key_qr>());
 	} else {
 		r.r_u32();
-		for (size_t i = 0; i != num_keys; ++i)
-			insert_key(i/OGF4_MOTION_FPS, r.skip<ogf_key_qr>());
+		for (size_t i = 0; i != num_keys; ++i) {
+			if (f32_keys) insert_key(i/OGF4_MOTION_FPS, r.skip<ogf_key_qr_f32>());
+			else insert_key(i/OGF4_MOTION_FPS, r.skip<ogf_key_qr>());
+		}
 	}
 	if (flags & KPF_T_PRESENT) {
 		r.r_u32();
 		fvector3 t_init, t_size, value;
-		if (flags & KPF_T_HQ) {
+		if (f32_keys) {
+			const fvector3* keys = r.skip<fvector3>(num_keys);
+			for (uint_fast32_t i = 0; i != num_keys; ++i)
+				insert_key(float(i)/OGF4_MOTION_FPS, &keys[i]);
+		} else if (flags & KPF_T_HQ) {
 			const ogf4_key_qt_hq* keys_qt = r.skip<ogf4_key_qt_hq>(num_keys);
 			r.r_fvector3(t_size);
 			r.r_fvector3(t_init);

@@ -250,10 +250,16 @@ enum ogf4_key_presence_flag {
 	KPF_T_PRESENT	= 0x01,
 	KPF_R_ABSENT	= 0x02,
 	KPF_T_HQ	= 0x04,		// 3456+
+	KPF_F32		= 0x08,		// XrayExportTool flTKeyFFT_Bit
 };
 
 struct ogf_key_qr {
 	int16_t				x, y, z, w;
+	template<typename T> void	dequantize(_quaternion<T>& q) const;
+};
+
+struct ogf_key_qr_f32 {
+	float			x, y, z, w;
 	template<typename T> void	dequantize(_quaternion<T>& q) const;
 };
 
@@ -264,6 +270,11 @@ template<typename T> inline void ogf_key_qr::dequantize(_quaternion<T>& q) const
 	q.y = y*m;
 	q.z = z*m;
 	q.w = w*m;
+}
+
+template<typename T> inline void ogf_key_qr_f32::dequantize(_quaternion<T>& q) const
+{
+	q.x = T(x); q.y = T(y); q.z = T(z); q.w = T(w);
 }
 
 template<typename T> struct _ogf4_key_qt {
