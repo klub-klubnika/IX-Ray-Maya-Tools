@@ -1,6 +1,7 @@
 import math
 import json
 import os
+import tempfile
 from functools import partial
 
 from maya import cmds, OpenMayaUI
@@ -213,25 +214,129 @@ def export_selected(*_):
         cmds.warning("IX-Ray: select animations to export")
         return
     motions = [_motions[index] for index in indices]
-    filenames = []
+    if not _target:
+        cmds.warning("IX-Ray: select the target skeleton first")
+        return
     for motion in motions:
-        name = _display_name(motion)
+        name = motion["name"]
         if not name or name in (".", "..") or name[-1] in " ." or any(
                 c in '<>:"/\\|?*' or ord(c) < 32 for c in name):
-            cmds.warning("IX-Ray: animation name cannot be used as a filename: " + name)
+            cmds.warning("IX-Ray: invalid OMF animation name: " + name)
             return
-        filenames.append(name + ".skl")
-    if len({name.casefold() for name in filenames}) != len(filenames):
-        cmds.warning("IX-Ray: selected animations have duplicate names; export them separately")
+    names = [motion["name"] for motion in motions]
+    if len({name.casefold() for name in names}) != len(names):
+        cmds.warning("IX-Ray: selected animations have duplicate OMF names")
         return
-    directories = cmds.fileDialog2(fileMode=3, caption="Export Selected Animations",
-                                  okCaption="Export")
-    if not directories:
+    export_format = cmds.optionMenu(_controls["export_format"], query=True, value=True)
+    if export_format == "SKL (one file per animation)":
+        destinations = cmds.fileDialog2(fileMode=3, caption="Re-bake Selected Animations to SKL",
+                                        okCaption="Export SKL")
+    else:
+        destinations = cmds.fileDialog2(fileMode=0, caption="Re-bake Selected Animations to OMF",
+                                        okCaption="Export OMF", fileFilter="OMF files (*.omf)")
+    if not destinations:
         return
-    for motion, filename in zip(motions, filenames):
-        cmds.ixrayMotionExport(motion["path"], motion["name"], os.path.join(directories[0], filename))
-    cmds.inViewMessage(amg="IX-Ray: exported {} animation(s)".format(len(motions)),
+    destination = destinations[0]
+    if export_format != "SKL (one file per animation)" and not destination.lower().endswith(".omf"):
+        destination += ".omf"
+    precision = int(cmds.optionMenu(_controls["export_precision"], query=True, value=True).split()[0])
+    target = _paths(_target)[0]
+    meshes = _target_meshes(target)
+    if not meshes:
+        cmds.warning("IX-Ray: target skeleton has no skinned mesh for motion export")
+        return
+    for motion in motions:
+        if not os.path.isfile(motion["path"]):
+            cmds.warning("IX-Ray: animation source is missing: " + motion["path"])
+            return
+    previous = cmds.ls(selection=True, long=True) or []
+    saved_range = (cmds.playbackOptions(query=True, minTime=True),
+                   cmds.playbackOptions(query=True, maxTime=True), cmds.currentTime(query=True))
+    global _busy
+    _busy = True
+    cmds.play(state=False)
+    cmds.undoInfo(openChunk=True, chunkName="IX-Ray Re-bake Motions to OMF")
+    saved_merge = cmds.fileInfo("ixrayOmfMerge", query=True) or []
+    saved_replace = cmds.fileInfo("ixrayOmfReplace", query=True) or []
+    saved_source = cmds.fileInfo("ixrayOmfMergeSource", query=True) or []
+    temporary_paths = []
+    try:
+        if export_format != "SKL (one file per animation)":
+            # The exporter writes the first motion normally. Every subsequent
+            # pass uses the existing output as the merge source.
+            cmds.fileInfo("ixrayOmfMerge", "false")
+            cmds.fileInfo("ixrayOmfReplace", "false")
+        for motion_index, motion in enumerate(motions):
+            values = [float(motion.get(key, default)) for key, default in
+                      (("scale", 1.0), ("stretch", 1.0), ("start", 0.0))]
+            if not all(math.isfinite(value) for value in values) or min(values[:2]) <= 0:
+                raise RuntimeError("IX-Ray: Scale Factor and Time Stretch must be positive")
+            cmds.select(target, replace=True)
+            end = cmds.ixrayMotionLoad(motion["path"], motion["name"],
+                "scale_factor={};time_stretch={};start_frame={};clear_existing_keys=true".format(*values),
+                motion.get("source_index", 0))
+            cmds.playbackOptions(minTime=values[2], maxTime=end,
+                                 animationStartTime=values[2], animationEndTime=end)
+            export_path = destination
+            if export_format == "SKL (one file per animation)":
+                export_path = os.path.join(destination, motion["name"] + ".skl")
+                export_type = "SKL export"
+                options = ""
+            else:
+                source_options = cmds.ixrayMotionInfo(motion["path"], motion["name"],
+                                                      motion.get("source_index", 0))
+                options = "omf_position_precision={};omf_motion_name={};{}".format(
+                    precision, motion["name"], source_options)
+                export_type = "OMF export"
+                if motion_index:
+                    fd, export_path = tempfile.mkstemp(prefix="ixray_motion_merge_", suffix=".omf")
+                    os.close(fd)
+                    os.remove(export_path)
+                    temporary_paths.append(export_path)
+                    cmds.fileInfo("ixrayOmfMergeSource", destination)
+                    options += "omf_merge=true;omf_replace=false;"
+                else:
+                    options += "omf_merge=false;omf_replace=false;"
+            cmds.select(meshes[0], replace=True)
+            cmds.file(export_path, force=True, options=options,
+                      typ=export_type, exportSelected=True)
+    finally:
+        for path in temporary_paths:
+            if os.path.exists(path):
+                os.remove(path)
+        cmds.fileInfo("ixrayOmfMerge", saved_merge[0] if saved_merge else "false")
+        cmds.fileInfo("ixrayOmfReplace", saved_replace[0] if saved_replace else "false")
+        cmds.fileInfo("ixrayOmfMergeSource", saved_source[0] if saved_source else "")
+        cmds.playbackOptions(minTime=saved_range[0], maxTime=saved_range[1],
+                             animationStartTime=saved_range[0], animationEndTime=saved_range[1])
+        cmds.currentTime(saved_range[2])
+        try:
+            cmds.select(previous, replace=True) if previous else cmds.select(clear=True)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+            _busy = False
+    result_name = os.path.basename(destination) if export_format != "SKL (one file per animation)" else "SKL files"
+    cmds.inViewMessage(amg="IX-Ray: re-baked {} animation(s) into {}".format(len(motions), result_name),
                        position="topCenter", fade=True)
+
+
+def _target_meshes(root):
+    """Return meshes skinned by the selected skeleton, not unrelated scene meshes."""
+    joints = set(cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or [])
+    joints.add(root)
+    meshes = []
+    for cluster in cmds.ls(type="skinCluster") or []:
+        influences = set()
+        for influence in cmds.skinCluster(cluster, query=True, influence=True) or []:
+            influences.update(cmds.ls(influence, long=True) or [influence])
+        if not joints.intersection(influences):
+            continue
+        for geometry in cmds.skinCluster(cluster, query=True, geometry=True) or []:
+            shape = (cmds.ls(geometry, long=True) or [geometry])[0]
+            parent = cmds.listRelatives(shape, parent=True, fullPath=True) or [shape]
+            if parent[0] not in meshes:
+                meshes.append(parent[0])
+    return meshes
 
 
 def load_selected(*_, play=False):
@@ -329,7 +434,17 @@ def show(paths=None, target=None):
     cmds.menuItem(parent=menu, label="Delete", command=delete_selected)
     cmds.button(label="Select All", command=lambda *_: cmds.textScrollList(
         _controls["list"], edit=True, selectIndexedItem=list(range(1, len(_visible_indices) + 1))) if _visible_indices else None)
-    cmds.button(label="Export Selected...", command=export_selected)
+    _controls["export_precision"] = cmds.optionMenu(label="OMF key precision")
+    for precision in ("8 bit", "16 bit", "32 bit"):
+        cmds.menuItem(label=precision)
+    cmds.optionMenu(_controls["export_precision"], edit=True,
+                    value=str(int(_option("ixrayMotion_exportPrecision", 32))) + " bit",
+                    changeCommand=lambda value: cmds.optionVar(
+                        intValue=("ixrayMotion_exportPrecision", int(value.split()[0]))))
+    _controls["export_format"] = cmds.optionMenu(label="Re-bake format")
+    cmds.menuItem(label="OMF (one file)")
+    cmds.menuItem(label="SKL (one file per animation)")
+    cmds.button(label="Re-bake Selected...", command=export_selected)
     for key, label, default in (("scale", "Scale Factor", 1.0),
                                 ("stretch", "Time Stretch", 1.0),
                                 ("start", "Start Frame", 0.0)):

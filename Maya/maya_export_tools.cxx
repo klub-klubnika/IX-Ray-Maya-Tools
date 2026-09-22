@@ -400,6 +400,15 @@ static MStatus extract_bones(MFnSkinCluster& skin_fn, xr_bone_vec& bones)
 		bone->bind_rotate().set(float(-r.x), float(-r.y), float(r.z));
 	}
 
+	// SkinCluster influence order is editable Maya state. OGF bone IDs are
+	// positional, so use the stable legacy order instead of that arbitrary list.
+	std::sort(bones.begin(), bones.end(), [](const xr_bone* a, const xr_bone* b) {
+		const bool a_root = a->parent_name().empty();
+		const bool b_root = b->parent_name().empty();
+		if (a_root != b_root) return a_root;
+		return a->name() < b->name();
+	});
+
 	return status;
 }
 
@@ -1141,6 +1150,43 @@ fail:
 	return 0;
 }
 
+xr_object* maya_export_tools::create_skl_object(const MObjectArray& mesh_objs, const MObjectArray& skin_objs, unsigned influence_limit)
+{
+	if (mesh_objs.length() != skin_objs.length() || mesh_objs.length() == 0) return 0;
+	if (mesh_objs.length() == 1) {
+		MObject mesh = mesh_objs[0], skin = skin_objs[0];
+		return create_skl_object(mesh, skin, influence_limit);
+	}
+	MStatus status;
+	xr_object* object = new xr_object;
+	object->flags() = EOF_DYNAMIC;
+	m_shared_surfaces.clear();
+	MFnSkinCluster first_skin(skin_objs[0], &status);
+	if (!status || !(status = extract_bones(first_skin, object->bones()))) goto fail;
+	for (unsigned i = 0; i != mesh_objs.length(); ++i) {
+		MFnMesh mesh_fn(mesh_objs[i], &status); if (!status) goto fail;
+		MFnSkinCluster skin_fn(skin_objs[i], &status); if (!status) goto fail;
+		xr_mesh* mesh = new xr_mesh;
+		object->meshes().push_back(mesh);
+		mesh->name() = getRealName(mesh_fn);
+		auto pVNormals = m_vnormals ? &mesh->vnorm() : nullptr;
+		if (!(status = extract_points(mesh_fn, mesh->points(), mesh->bbox())) ||
+			!(status = extract_faces(mesh_fn, mesh->faces(), pVNormals)) ||
+			!(status = extract_uvs(mesh_fn, mesh->faces(), mesh->vmrefs(), mesh->vmaps())) ||
+			!(status = extract_weights(mesh_fn, skin_fn, mesh->faces(), mesh->vmrefs(), mesh->vmaps(), influence_limit)) ||
+			!(status = extract_surfaces(mesh_fn, mesh->surfmaps()))) goto fail;
+		if (m_target_sdk <= xray_re::SDK_VER_0_4) {
+			if (!(status = extract_smoothing_groups_soc(mesh_fn, mesh->sgroups()))) goto fail;
+		} else if (!(status = extract_smoothing_groups_cs(mesh_fn, mesh->sgroups()))) goto fail;
+	}
+	object->partitions().push_back(new xr_partition(object->bones()));
+	commit_surfaces(object->surfaces());
+	return object;
+fail:
+	delete object;
+	return 0;
+}
+
 static void collect_meshes(MObjectArray& mesh_objs, MObject& root_obj = MObject::kNullObj)
 {
 	MItDag dag_it;
@@ -1282,6 +1328,36 @@ static MStatus find_mesh_and_skin(MObject* mesh_obj, MObject* skin_obj, bool sel
 	return MS::kSuccess;
 }
 
+static MStatus find_meshes_and_skins(MObjectArray& mesh_objs, MObjectArray& skin_objs, bool selection_only)
+{
+	collect_meshes(mesh_objs, selection_only);
+	if (mesh_objs.length() == 0) {
+		MGlobal::displayError("xray_re: can't find any mesh to export");
+		return MS::kFailure;
+	}
+	for (unsigned mesh_index = 0; mesh_index != mesh_objs.length(); ++mesh_index) {
+		MObject found;
+		for (MItDependencyNodes it(MFn::kSkinClusterFilter); !it.isDone(); it.next()) {
+			MFnSkinCluster skin_fn(it.thisNode());
+			MObjectArray affected;
+			skin_fn.getOutputGeometry(affected);
+			for (unsigned i = 0; i != affected.length(); ++i) if (affected[i] == mesh_objs[mesh_index]) {
+				if (!found.isNull()) {
+					MGlobal::displayError("xray_re: multiple skin clusters affect one mesh");
+					return MS::kFailure;
+				}
+				found = it.thisNode();
+			}
+		}
+		if (found.isNull()) {
+			MGlobal::displayError("xray_re: every exported skeletal mesh needs one skin cluster");
+			return MS::kFailure;
+		}
+		skin_objs.append(found);
+	}
+	return MS::kSuccess;
+}
+
 MStatus maya_export_tools::export_skl_object(const char* path, bool selection_only)
 {
 	MObject mesh_obj, skin_obj;
@@ -1307,16 +1383,17 @@ MStatus maya_export_tools::export_ogf(const char* path, bool selection_only)
 		MGlobal::displayError("IX-Ray: invalid OGF options.");
 		return m_options_status;
 	}
-	MObject mesh_obj, skin_obj;
-	MStatus status = find_mesh_and_skin(&mesh_obj, &skin_obj, selection_only);
+	MObjectArray mesh_objs, skin_objs;
+	MStatus status = find_meshes_and_skins(mesh_objs, skin_objs, selection_only);
 	if (!status) return status;
 
 	// The editable-object extractor works in mesh-local bind space.
-	MDagPath mesh_path;
-	MDagPath::getAPathTo(mesh_obj, mesh_path);
-	if (!mesh_path.inclusiveMatrix().isEquivalent(MMatrix::identity, 1e-6)) {
-		MGlobal::displayError("IX-Ray: freeze mesh transforms before OGF export (including parent groups).");
-		return MS::kFailure;
+	for (unsigned i = 0; i != mesh_objs.length(); ++i) {
+		MDagPath mesh_path; MDagPath::getAPathTo(mesh_objs[i], mesh_path);
+		if (!mesh_path.inclusiveMatrix().isEquivalent(MMatrix::identity, 1e-6)) {
+			MGlobal::displayError("IX-Ray: freeze mesh transforms before OGF export (including parent groups).");
+			return MS::kFailure;
+		}
 	}
 	struct restore_pose {
 		std::vector<std::pair<MObject, MTransformationMatrix>> joints;
@@ -1330,7 +1407,7 @@ MStatus maya_export_tools::export_ogf(const char* path, bool selection_only)
 	m_vnormals = m_ogf_smoothing == ogf_smoothing::normals;
 	m_target_sdk = m_ogf_smoothing == ogf_smoothing::soc ? SDK_VER_0_4 : SDK_VER_0_6;
 	status = MS::kFailure;
-	if (xr_object* object = create_skl_object(mesh_obj, skin_obj, m_ogf_influences)) {
+	if (xr_object* object = create_skl_object(mesh_objs, skin_objs, m_ogf_influences)) {
 		std::string error;
 		if (save_skeletal_ogf(*object, path, m_ogf_smoothing, m_ogf_influences, m_ogf_motion_refs, error)) {
 			status = MS::kSuccess;
@@ -1484,7 +1561,8 @@ MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
 		bone_names[i] = getRealName(joint);
 	}
 	std::vector<unsigned> bone_order(joints.length());
-	if (!get_imported_bone_order(joints, bone_names, bone_order)) {
+	if (!get_imported_bone_order(joints, bone_names, bone_order)
+		|| bone_order.size() != bone_names.size()) {
 		// A manually created skeleton has no source global IDs.  The OMF remains
 		// self-consistent, but cannot safely be merged with an unrelated OMF.
 		for (unsigned i = 0; i != joints.length(); ++i) bone_order[i] = i;
@@ -1498,9 +1576,8 @@ MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
 		MGlobal::displayError("IX-Ray: invalid Maya frame rate for OMF export.");
 		return MS::kFailure;
 	}
-	// OMF playback is based on 30 FPS.  Preserve the Maya animation's real-time
-	// duration by scaling the motion speed to the current Maya frame rate.
-	m_omf_speed = float(maya_fps / 30.0);
+	// m_omf_speed comes from the export options.  The Motion Browser supplies
+	// the source OMF value so a re-bake does not change its playback metadata.
 	const int32_t frame_start = int32_t(MAnimControl::minTime().as(unit));
 	const int32_t frame_end = int32_t(MAnimControl::maxTime().as(unit));
 	if (frame_end < frame_start) return MS::kInvalidParameter;
@@ -1557,14 +1634,17 @@ MStatus maya_export_tools::export_omf(const char* path, bool selection_only)
 	writer.w_u16(OGF4_S_SMPARAMS_VERSION_4);
 	writer.w_u16(1);
 	writer.w_sz("default");
-	writer.w_size_u16(bone_names.size());
+	// The partition and the key stream must contain exactly the same bones.
+	// In particular, a partially preserved source order must never advertise
+	// more bones than are actually written: OMF Editor rejects that file.
+	writer.w_size_u16(bone_order.size());
 	for (size_t i = 0; i != bone_order.size(); ++i) {
 		writer.w_sz(bone_names[bone_order[i]]);
 		writer.w_u32(uint32_t(i));
 	}
 	writer.w_u16(1);
 	writer.w_sz(exported_motion_name);
-	writer.w_u32(m_omf_stop_at_end ? 0x2u : 0u);
+	writer.w_u32(m_omf_flags);
 	writer.w_u16(ALL_PARTITIONS);
 	writer.w_u16(0);
 	writer.w_float(m_omf_speed); writer.w_float(1.f); writer.w_float(m_omf_accrue); writer.w_float(m_omf_falloff);
@@ -1671,6 +1751,7 @@ void maya_export_tools::set_default_options(void)
 	m_omf_speed = 1.f;
 	m_omf_accrue = 2.f;
 	m_omf_falloff = 2.f;
+	m_omf_flags = 0;
 	m_omf_stop_at_end = false;
 	m_omf_has_motion_marks = false;
 	m_omf_marks.clear();
@@ -1727,7 +1808,12 @@ MStatus maya_export_tools::parse_options(const MString& options)
 		else if (key_value[0] == "omf_speed") m_omf_speed = key_value[1].asFloat();
 		else if (key_value[0] == "omf_accrue") m_omf_accrue = key_value[1].asFloat();
 		else if (key_value[0] == "omf_falloff") m_omf_falloff = key_value[1].asFloat();
-		else if (key_value[0] == "omf_stop_at_end") m_omf_stop_at_end = key_value[1] == "true";
+		else if (key_value[0] == "omf_flags") m_omf_flags = unsigned(key_value[1].asInt());
+		else if (key_value[0] == "omf_stop_at_end") {
+			m_omf_stop_at_end = key_value[1] == "true";
+			if (m_omf_stop_at_end) m_omf_flags |= xr_skl_motion::SMF_STOP_AT_END;
+			else m_omf_flags &= ~unsigned(xr_skl_motion::SMF_STOP_AT_END);
+		}
 		else if (key_value[0] == "omf_has_motion_marks") m_omf_has_motion_marks = key_value[1] == "true";
 		else if (key_value[0] == "omf_marks") {
 			m_omf_marks.clear();

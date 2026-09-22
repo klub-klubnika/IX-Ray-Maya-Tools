@@ -176,6 +176,65 @@ public:
 	}
 };
 
+// Returns OMF settings that are stored alongside a source animation.  The
+// browser uses this before re-baking so metadata is not replaced by defaults.
+class ixrayMotionInfo: public MPxCommand
+{
+public:
+	MStatus doIt(const MArgList& args) override
+	{
+		if (args.length() != 3) return MS::kFailure;
+		MString path, name;
+		int source_index = 0;
+		args.get(0, path); args.get(1, name); args.get(2, source_index);
+		if (source_index < 0) return MS::kInvalidParameter;
+
+		xr_object object;
+		xr_ogf_v4 omf;
+		xr_skl_motion single;
+		const xr_skl_motion_vec* motions = nullptr;
+		const MString extension = extract_extension(path);
+		if (extension == "skls") {
+			if (!object.load_skls(path.asChar())) return cant_open(path);
+			motions = &object.motions();
+		} else if (extension == "omf") {
+			if (!omf.load_omf(path.asChar())) return cant_open(path);
+			motions = &omf.motions();
+		} else if (extension == "skl") {
+			if (!single.load_skl(path.asChar())) return cant_open(path);
+			if (source_index == 0 && single.name() == name.asChar()) motions = nullptr;
+			else return MS::kFailure;
+		} else {
+			MGlobal::displayError("IX-Ray: unsupported motion file type");
+			return MS::kFailure;
+		}
+
+		const xr_skl_motion* chosen = extension == "skl" ? &single : nullptr;
+		if (motions) {
+			for (unsigned index = 0; index != motions->size(); ++index) {
+				const xr_skl_motion* motion = (*motions)[index];
+				if (index == unsigned(source_index) && motion->name() == name.asChar()) {
+					chosen = motion;
+					break;
+				}
+			}
+		}
+		if (!chosen) {
+			MGlobal::displayError(MString("IX-Ray: animation not found: ") + name);
+			return MS::kFailure;
+		}
+		MString result("omf_speed="); result += chosen->speed();
+		result += ";omf_accrue="; result += chosen->accrue();
+		result += ";omf_falloff="; result += chosen->falloff();
+		result += ";omf_flags="; result += int(chosen->flags());
+		result += ";omf_stop_at_end=";
+		result += (chosen->flags() & xr_skl_motion::SMF_STOP_AT_END) ? "true" : "false";
+		result += ";";
+		setResult(result);
+		return MS::kSuccess;
+	}
+};
+
 class ixrayMotionLoad: public MPxCommand
 {
 public:
@@ -302,3 +361,7 @@ MSyntax motion_load_syntax_creator() { return ixrayMotionLoad::syntax_creator();
 void* motion_export_command_creator() { return new ixrayMotionExport; }
 
 MSyntax motion_export_syntax_creator() { return ixrayMotionLoad::syntax_creator(); }
+
+void* motion_info_command_creator() { return new ixrayMotionInfo; }
+
+MSyntax motion_info_syntax_creator() { return ixrayMotionLoad::syntax_creator(); }

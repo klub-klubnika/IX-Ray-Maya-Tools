@@ -42,6 +42,7 @@ private:
 	xray_re::xr_surface*	create_surface(const char* surf_name, MFnSet& set_fn);
 	xray_re::xr_object*	create_object(MObjectArray& mesh_objs);
 	xray_re::xr_object*	create_skl_object(MObject& mesh_obj, MObject& skin_obj, unsigned influence_limit = 0);
+	xray_re::xr_object*	create_skl_object(const MObjectArray& mesh_objs, const MObjectArray& skin_objs, unsigned influence_limit = 0);
 
 	void			commit_surfaces(std::vector<xray_re::xr_surface*>& surfaces);
 
@@ -64,6 +65,7 @@ private:
 	float m_omf_speed;
 	float m_omf_accrue;
 	float m_omf_falloff;
+	unsigned m_omf_flags;
 	bool m_omf_stop_at_end;
 	bool m_omf_has_motion_marks;
 	struct omf_mark {

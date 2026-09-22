@@ -1226,6 +1226,8 @@ MStatus initializePlugin(MObject obj)
 		return status;
 	if (!(status = plugin_fn.registerCommand("ixrayMotionExport", motion_export_command_creator, motion_export_syntax_creator)))
 		return status;
+	if (!(status = plugin_fn.registerCommand("ixrayMotionInfo", motion_info_command_creator, motion_info_syntax_creator)))
+		return status;
 
 	return status;
 }
@@ -1239,6 +1241,7 @@ MStatus uninitializePlugin(MObject obj)
 	plugin_fn.deregisterCommand("ixrayMotionList");
 	plugin_fn.deregisterCommand("ixrayMotionLoad");
 	plugin_fn.deregisterCommand("ixrayMotionExport");
+	plugin_fn.deregisterCommand("ixrayMotionInfo");
 	maya_xray_material::uninitialize(plugin_fn);
 	plugin_fn.deregisterFileTranslator(object_reader);
 	plugin_fn.deregisterFileTranslator(object_writer);

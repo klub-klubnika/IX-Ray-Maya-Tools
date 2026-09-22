@@ -13,5 +13,7 @@ void*	motion_load_command_creator();
 MSyntax	motion_load_syntax_creator();
 void*	motion_export_command_creator();
 MSyntax	motion_export_syntax_creator();
+void*	motion_info_command_creator();
+MSyntax	motion_info_syntax_creator();
 
 #endif

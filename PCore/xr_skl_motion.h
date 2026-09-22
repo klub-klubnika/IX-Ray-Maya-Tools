@@ -77,6 +77,10 @@ public:
 
 	const xr_bone_motion_vec&	bone_motions() const;
 	xr_bone_motion_vec&		bone_motions();
+	float				speed() const;
+	float				accrue() const;
+	float				falloff() const;
+	unsigned			flags() const;
 
 		int		marks_size();
 
@@ -129,6 +133,10 @@ inline xr_bone_motion_vec& xr_skl_motion::bone_motions()
 {
 	return m_bone_motions;
 }
+inline float xr_skl_motion::speed() const { return m_speed; }
+inline float xr_skl_motion::accrue() const { return m_accrue; }
+inline float xr_skl_motion::falloff() const { return m_falloff; }
+inline unsigned xr_skl_motion::flags() const { return m_flags; }
 inline int xr_skl_motion::marks_size()
 {
 	return m_marks.size();
