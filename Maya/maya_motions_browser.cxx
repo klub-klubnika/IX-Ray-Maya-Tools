@@ -42,6 +42,22 @@ static MStatus cant_open(const MString& path)
 	return MS::kFailure;
 }
 
+static void remember_omf_settings(const xr_skl_motion& motion)
+{
+	const struct { const char* scene_key; float value; } values[] = {
+		{ "ixrayOmfAccrue", motion.accrue() },
+		{ "ixrayOmfFalloff", motion.falloff() },
+	};
+	for (const auto& value : values) {
+		MString command("fileInfo \""); command += value.scene_key; command += "\" \"";
+		command += value.value; command += "\"";
+		MGlobal::executeCommand(command, false, false);
+	}
+	MGlobal::executeCommand(MString("fileInfo \"ixrayOmfFlags\" \"") + int(motion.flags()) + "\"", false, false);
+	MGlobal::executeCommand(MString("fileInfo \"ixrayOmfStopAtEnd\" \"")
+		+ ((motion.flags() & xr_skl_motion::SMF_STOP_AT_END) ? "true" : "false") + "\"", false, false);
+}
+
 class ixrayMotionList: public MPxCommand
 {
 public:
@@ -323,6 +339,7 @@ MStatus ixrayMotionLoad::doIt(const MArgList& args)
 			if (motion->name() != motion_name.asChar()) { ++index; continue; }
 			if (index++ != unsigned(source_index)) continue;
 			status = imp_tools.import_selected_motion(motion, &end_frame);
+			if (status == MS::kSuccess) remember_omf_settings(*motion);
 			break;
 		}
 		delete omf;

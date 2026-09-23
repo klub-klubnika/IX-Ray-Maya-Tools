@@ -103,6 +103,65 @@ def _fill():
         motion = _motions[index]
         cmds.textScrollList(_controls["list"], edit=True,
                             append=_display_name(motion))
+    _update_motion_info()
+
+
+def _update_motion_info(*_):
+    """Show the source OMF parameters for the one selected animation."""
+    if "info_status" not in _controls:
+        return
+
+    def set_value(name, value):
+        cmds.text(_controls["info_" + name], edit=True, label=str(value))
+
+    indices = _selected_motion_indices()
+    if len(indices) != 1:
+        for name in ("speed", "accrue", "falloff", "flags"):
+            set_value(name, "")
+        cmds.checkBox(_controls["info_stop"], edit=True, value=False)
+        cmds.text(_controls["info_status"], edit=True,
+                  label="Select one animation to view its source settings.")
+        cmds.text(_controls["info_status"], edit=True, visible=True)
+        if _target:
+            cmds.text(_controls["target"], edit=True, label="Skeleton: " + _paths(_target)[0])
+        return
+    motion = _motions[indices[0]]
+    try:
+        raw = cmds.ixrayMotionInfo(motion["path"], motion["name"], motion.get("source_index", 0))
+        values = {}
+        for item in str(raw).split(";"):
+            if "=" in item:
+                key, value = item.split("=", 1)
+                values[key] = value
+        flags = int(values.get("omf_flags", "0"))
+        flag_names = []
+        for bit, label in ((0x1, "FX"), (0x2, "Stop at end"),
+                           (0x4, "No mix"), (0x8, "Sync part")):
+            if flags & bit:
+                flag_names.append(label)
+        unknown = flags & ~0x0f
+        if unknown:
+            flag_names.append("unknown: 0x{:X}".format(unknown))
+        set_value("speed", values.get("omf_speed", ""))
+        set_value("accrue", values.get("omf_accrue", ""))
+        set_value("falloff", values.get("omf_falloff", ""))
+        set_value("flags", ", ".join(flag_names) if flag_names else "No special flags")
+        cmds.checkBox(_controls["info_stop"], edit=True,
+                      value=values.get("omf_stop_at_end", "false") == "true")
+        cmds.text(_controls["info_status"], edit=True, visible=False)
+        if _target:
+            cmds.text(_controls["target"], edit=True,
+                      label="Skeleton: {}    |    Source: {}".format(
+                          _paths(_target)[0], os.path.basename(motion["path"])))
+    except RuntimeError as error:
+        for name in ("speed", "accrue", "falloff", "flags", "stop"):
+            if name == "stop":
+                cmds.checkBox(_controls["info_stop"], edit=True, value=False)
+            else:
+                set_value(name, "")
+        cmds.text(_controls["info_status"], edit=True,
+                  label="Cannot read source settings: " + str(error))
+        cmds.text(_controls["info_status"], edit=True, visible=True)
 
 
 def _selected_indices():
@@ -372,6 +431,33 @@ def load_selected(*_, play=False):
                             "scale_factor={};time_stretch={};start_frame={};clear_existing_keys={}".format(
                                 *values, "true" if clear_existing else "false"),
                                  motion.get("source_index", 0))
+        # Keep the source metadata in the scene so Export Selection OMF can
+        # re-bake the animation without silently replacing its motion settings.
+        source_options = cmds.ixrayMotionInfo(path, name, motion.get("source_index", 0))
+        source_values = {}
+        for item in str(source_options).split(";"):
+            if "=" in item:
+                key, value = item.split("=", 1)
+                source_values[key] = value
+        for option, scene_key in (("omf_accrue", "ixrayOmfAccrue"),
+                                  ("omf_falloff", "ixrayOmfFalloff"),
+                                  ("omf_flags", "ixrayOmfFlags"),
+                                  ("omf_stop_at_end", "ixrayOmfStopAtEnd")):
+            if option in source_values:
+                cmds.fileInfo(scene_key, source_values[option])
+        cmds.fileInfo("ixrayOmfMotionName", name)
+        # If the regular OMF export options are already visible, reflect the
+        # loaded motion immediately.  These remain ordinary editable fields;
+        # a later user edit is saved back to fileInfo and wins on export.
+        for option, control in (("omf_accrue", "ixrayOmfAccrue"),
+                                ("omf_falloff", "ixrayOmfFalloff")):
+            if option in source_values and cmds.floatFieldGrp(control, exists=True):
+                cmds.floatFieldGrp(control, edit=True, value1=float(source_values[option]))
+        if cmds.checkBox("ixrayOmfStopAtEnd", exists=True):
+            cmds.checkBox("ixrayOmfStopAtEnd", edit=True,
+                          value=source_values.get("omf_stop_at_end", "false") == "true")
+        if cmds.textFieldGrp("ixrayOmfMotionName", exists=True):
+            cmds.textFieldGrp("ixrayOmfMotionName", edit=True, text=name)
         _remember_options()
     finally:
         try:
@@ -428,10 +514,33 @@ def show(paths=None, target=None):
     _controls["search"] = cmds.textFieldGrp(label="Search", textChangedCommand=_filter_changed)
     _controls["list"] = cmds.textScrollList(allowMultiSelection=True, height=260,
                                            deleteKeyCommand=delete_selected,
+                                           selectCommand=_update_motion_info,
                                            doubleClickCommand=partial(load_selected, play=True))
     menu = cmds.popupMenu(parent=_controls["list"], button=3)
     cmds.menuItem(parent=menu, label="Rename", command=rename_selected)
     cmds.menuItem(parent=menu, label="Delete", command=delete_selected)
+    cmds.frameLayout(label="Animation Settings", collapsable=True, collapse=False,
+                     marginWidth=8, marginHeight=3)
+    cmds.columnLayout(adjustableColumn=True, rowSpacing=2)
+    cmds.rowColumnLayout(numberOfColumns=6,
+                         columnWidth=[(1, 54), (2, 55), (3, 54), (4, 55), (5, 54), (6, 55)],
+                         columnSpacing=[(1, 4), (2, 14), (3, 4), (4, 14), (5, 4)])
+    for key, label in (("speed", "Speed"), ("accrue", "Accrue"), ("falloff", "Falloff")):
+        cmds.text(label=label + ":  ", align="right", font="smallBoldLabelFont")
+        _controls["info_" + key] = cmds.text(label="", align="left")
+    cmds.setParent("..")
+    cmds.separator(style="in")
+    cmds.rowColumnLayout(numberOfColumns=2, columnWidth=[(1, 96), (2, 238)],
+                         columnSpacing=[(1, 10)])
+    cmds.text(label="Behavior:  ", align="right", font="smallBoldLabelFont")
+    _controls["info_flags"] = cmds.text(label="", align="left")
+    cmds.text(label="Stop at end:  ", align="right", font="smallBoldLabelFont")
+    _controls["info_stop"] = cmds.checkBox(label="", value=False, enable=False)
+    cmds.setParent("..")
+    _controls["info_status"] = cmds.text(label="Select one animation to view its source settings.",
+                                           align="left", font="smallPlainLabelFont")
+    cmds.setParent("..")
+    cmds.setParent("..")
     cmds.button(label="Select All", command=lambda *_: cmds.textScrollList(
         _controls["list"], edit=True, selectIndexedItem=list(range(1, len(_visible_indices) + 1))) if _visible_indices else None)
     _controls["export_precision"] = cmds.optionMenu(label="OMF key precision")

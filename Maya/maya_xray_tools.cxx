@@ -151,6 +151,19 @@ public:
 		if (MGlobal::executeCommand("fileInfo -q \"ixrayOmfMotionName\"", motion_name, false) == MS::kSuccess
 			&& motion_name.length() > 0 && motion_name[0].length() > 0)
 			options = MString("omf_motion_name=") + motion_name[0] + ";";
+		const struct { const char* scene_key; const char* option_key; } source_settings[] = {
+			{ "ixrayOmfSpeed", "omf_speed" },
+			{ "ixrayOmfAccrue", "omf_accrue" },
+			{ "ixrayOmfFalloff", "omf_falloff" },
+			{ "ixrayOmfFlags", "omf_flags" },
+			{ "ixrayOmfStopAtEnd", "omf_stop_at_end" },
+		};
+		for (const auto& setting : source_settings) {
+			MStringArray value;
+			if (MGlobal::executeCommand(MString("fileInfo -q \"") + setting.scene_key + "\"", value, false) == MS::kSuccess
+				&& value.length() > 0)
+				options += MString(setting.option_key) + "=" + value[0] + ";";
+		}
 		maya_export_tools tools(options);
 		const MStatus export_status = tools.export_omf(exported_path, true);
 		if (export_status != MS::kSuccess) {
@@ -265,10 +278,11 @@ public:
 	MStatus writer(const MFileObject& file, const MString& options, FileAccessMode mode) override {
 		if (mode != kExportAccessMode && mode != kExportActiveAccessMode && mode != kSaveAccessMode)
 			return MS::kFailure;
+		const MString export_options(options);
 		const MString target_path = file.resolvedFullName();
 		const char* target = target_path.asChar();
-		bool merge = std::string(options.asChar()).find("omf_merge=true") != std::string::npos;
-		bool replace = std::string(options.asChar()).find("omf_replace=true") != std::string::npos;
+		bool merge = std::string(export_options.asChar()).find("omf_merge=true") != std::string::npos;
+		bool replace = std::string(export_options.asChar()).find("omf_replace=true") != std::string::npos;
 		MStringArray saved_merge;
 		if (MGlobal::executeCommand("fileInfo -q \"ixrayOmfMerge\"", saved_merge, false) == MS::kSuccess
 			&& saved_merge.length() > 0)
@@ -279,7 +293,7 @@ public:
 			replace = saved_replace[0] == "1" || saved_replace[0] == "true";
 		merge = merge || replace;
 		if (!merge)
-			return maya_export_tools(options).export_omf(target, mode == kExportActiveAccessMode);
+			return maya_export_tools(export_options).export_omf(target, mode == kExportActiveAccessMode);
 		MStringArray merge_sources;
 		if (MGlobal::executeCommand("fileInfo -q \"ixrayOmfMergeSource\"", merge_sources, false) != MS::kSuccess
 			|| merge_sources.length() == 0 || merge_sources[0].length() == 0) {
@@ -309,7 +323,7 @@ public:
 			return MS::kFailure;
 		}
 		MGlobal::displayInfo(MString("IX-Ray: starting OMF Editor merge for ") + target);
-		const MStatus status = maya_export_tools(options).export_omf(exported, mode == kExportActiveAccessMode);
+		const MStatus status = maya_export_tools(export_options).export_omf(exported, mode == kExportActiveAccessMode);
 		const bool completed = status == MS::kSuccess && append_with_omf_editor(editor, original, exported, replace)
 			&& CopyFileA(original, merge_source, FALSE);
 		if (!completed) MGlobal::displayError("IX-Ray: failed to merge the exported animation.");

@@ -431,11 +431,13 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		string $scenePath = `file -q -sn`;
 		$precision = (int)`ixrayOmfSceneValue "ixrayOmfPositionPrecision" "32"`;
 		$motionName = `ixrayOmfSceneValue "ixrayOmfMotionName" ""`;
-		// The speed must always match the current scene frame rate.
+		// Default to the current Maya frame rate.  The editable field is queried
+		// on export, so a user-entered value is never recalculated or replaced.
 		$speed = ixrayOmfCurrentFps() / 30.0;
 		$accrue = (float)`ixrayOmfSceneValue "ixrayOmfAccrue" "2"`;
 		$falloff = (float)`ixrayOmfSceneValue "ixrayOmfFalloff" "2"`;
-		$stopAtEnd = (int)`ixrayOmfSceneValue "ixrayOmfStopAtEnd" "0"`;
+		string $stopAtEndValue = `ixrayOmfSceneValue "ixrayOmfStopAtEnd" "0"`;
+		$stopAtEnd = ($stopAtEndValue == "1" || $stopAtEndValue == "true");
 		int $merge = (int)`ixrayOmfSceneValue "ixrayOmfMerge" "0"`;
 		int $replace = (int)`ixrayOmfSceneValue "ixrayOmfReplace" "0"`;
 		$hasMotionMarks = (int)`ixrayOmfSceneValue "ixrayOmfHasMotionMarks" "0"`;
@@ -520,7 +522,7 @@ global proc int xray_re_omf_export_options(string $parent, string $action, strin
 		int $item = `optionMenu -q -select "ixrayOmfPositionPrecision"`;
 		int $precision = ($item == 2) ? 16 : (($item == 3) ? 32 : 8);
 		string $motionName = `textFieldGrp -q -text "ixrayOmfMotionName"`;
-		float $speed = ixrayOmfCurrentFps() / 30.0;
+		float $speed = `floatFieldGrp -q -value1 "ixrayOmfSpeed"`;
 		float $accrue = `floatFieldGrp -q -value1 "ixrayOmfAccrue"`;
 		float $falloff = `floatFieldGrp -q -value1 "ixrayOmfFalloff"`;
 		int $stopAtEnd = `checkBox -q -value "ixrayOmfStopAtEnd"`;

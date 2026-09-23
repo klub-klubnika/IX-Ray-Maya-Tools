@@ -940,8 +940,8 @@ static MStatus write_motion_keys(const maya_object_map& joints, const xr_skl_mot
 	}
 	// Preserve exact imported samples and eliminate Euler rotation flips.
 	if (imported_channels.length())
-		MGlobal::executeCommand(MString("keyTangent -e -time ") + start_frame + ":" + last
-			+ " -itt linear -ott linear" + imported_channels + ";", false, true);
+		MGlobal::executeCommand(MString("keyTangent -e -time \"") + start_frame + ":" + last
+			+ "\" -itt linear -ott linear" + imported_channels + ";", false, true);
 	if (rotation_curves.length())
 		MGlobal::executeCommand(MString("filterCurve -f euler") + rotation_curves + ";", false, true);
 	return MS::kSuccess;
