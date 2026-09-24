@@ -25,6 +25,7 @@
 #include <maya/MTimeArray.h>
 #include <maya/MDoubleArray.h>
 #include <maya/MSelectionList.h>
+#include <maya/MItSelectionList.h>
 #include <maya/MDagPath.h>
 #include <maya/MItDag.h>
 #include <maya/MPlug.h>
@@ -217,6 +218,115 @@ public:
 
 	static void*		creator();
 };
+
+static bool has_exportable_mesh(const MDagPath& root)
+{
+	MItDag it;
+	if (!it.reset(root, MItDag::kDepthFirst, MFn::kTransform))
+		return false;
+	for (; !it.isDone(); it.next())
+	{
+		MDagPath path;
+		if (!it.getPath(path)) continue;
+		MFnDagNode node(path);
+		for (unsigned i = 0; i < node.childCount(); ++i)
+		{
+			MObject child = node.child(i);
+			if (child.hasFn(MFn::kMesh) && !MFnDagNode(child).isIntermediateObject())
+				return true;
+		}
+	}
+	return false;
+}
+
+static std::string object_file_stem(const MDagPath& path)
+{
+	std::string result = MFnDagNode(path).name().asChar();
+	for (char& c : result)
+		if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\'
+			|| c == '|' || c == '?' || c == '*') c = '_';
+	while (!result.empty() && (result.back() == '.' || result.back() == ' ')) result.pop_back();
+	return result.empty() ? "unnamed_group" : result;
+}
+
+// Return only top-level transform groups from the active selection. A child of
+// another selected group must not be exported twice.
+static std::vector<MDagPath> selected_object_groups()
+{
+	MSelectionList selection;
+	if (!MGlobal::getActiveSelectionList(selection) || selection.isEmpty()) return {};
+	std::vector<MDagPath> groups;
+	for (MItSelectionList it(selection); !it.isDone(); it.next())
+	{
+		MDagPath path;
+		if (!it.getDagPath(path)) continue;
+		if (path.hasFn(MFn::kMesh)) path.pop();
+		if (!path.hasFn(MFn::kTransform)) continue;
+		const MString full_name = path.fullPathName();
+		bool duplicate = false;
+		for (const MDagPath& existing : groups)
+			if (existing.fullPathName() == full_name) { duplicate = true; break; }
+		if (!duplicate) groups.push_back(path);
+	}
+	std::sort(groups.begin(), groups.end(), [](const MDagPath& a, const MDagPath& b) {
+		return a.fullPathName().length() < b.fullPathName().length();
+	});
+	std::vector<MDagPath> roots;
+	for (const MDagPath& group : groups)
+	{
+		const std::string full_name = group.fullPathName().asChar();
+		bool child_of_root = false;
+		for (const MDagPath& root : roots) {
+			const std::string root_name = root.fullPathName().asChar();
+			if (full_name.size() > root_name.size() && full_name.compare(0, root_name.size(), root_name) == 0
+				&& full_name[root_name.size()] == '|') { child_of_root = true; break; }
+		}
+		if (!child_of_root) roots.push_back(group);
+	}
+	return roots;
+}
+
+static MStatus export_selected_object_groups(const MString& target_path, const MString& options)
+{
+	const std::vector<MDagPath> groups = selected_object_groups();
+	if (groups.size() < 2) return MS::kNotImplemented;
+
+	std::vector<std::string> names;
+	for (const MDagPath& group : groups)
+	{
+		if (!has_exportable_mesh(group)) {
+			MGlobal::displayError(MString("IX-Ray: selected group has no exportable mesh: ") + group.fullPathName());
+			return MS::kFailure;
+		}
+		const std::string name = object_file_stem(group);
+		if (std::find(names.begin(), names.end(), name) != names.end()) {
+			MGlobal::displayError(MString("IX-Ray: selected group names produce the same .object file name: ") + name.c_str());
+			return MS::kFailure;
+		}
+		names.push_back(name);
+	}
+
+	const std::string target(target_path.asChar());
+	const size_t slash = target.find_last_of("\\/");
+	const std::string directory = slash == std::string::npos ? std::string() : target.substr(0, slash + 1);
+	MSelectionList saved_selection;
+	MGlobal::getActiveSelectionList(saved_selection);
+	MStatus status = MS::kSuccess;
+	for (size_t i = 0; i < groups.size(); ++i)
+	{
+		MSelectionList single_group;
+		single_group.add(groups[i]);
+		if (!MGlobal::setActiveSelectionList(single_group) ||
+			maya_export_tools(options).export_object((directory + names[i] + ".object").c_str(), true) != MS::kSuccess)
+		{
+			status = MS::kFailure;
+			break;
+		}
+		MGlobal::displayInfo(MString("IX-Ray: exported object: ") + (directory + names[i] + ".object").c_str());
+	}
+	MGlobal::setActiveSelectionList(saved_selection);
+	return status;
+}
 
 class maya_ogf_writer: public MPxFileTranslator
 {
@@ -511,10 +621,17 @@ MStatus maya_object_writer::writer(const MFileObject& file, const MString& optio
 		return MS::kFailure;
 	}
 
-	maya_export_tools tools(options);
+	// Export Selection with two or more groups is a batch export. The chosen
+	// file name only supplies the output folder; each group writes
+	// <group-name>.object into that folder.
+	if (mode == kExportActiveAccessMode) {
+		const MStatus batch_status = export_selected_object_groups(file.resolvedFullName(), options);
+		if (batch_status != MS::kNotImplemented)
+			return batch_status;
+	}
 
-	return tools.export_object(file.resolvedFullName().asChar(),
-		mode == kExportActiveAccessMode);
+	maya_export_tools tools(options);
+	return tools.export_object(file.resolvedFullName().asChar(), mode == kExportActiveAccessMode);
 }
 
 bool maya_object_writer::haveWriteMethod() const { return true; }

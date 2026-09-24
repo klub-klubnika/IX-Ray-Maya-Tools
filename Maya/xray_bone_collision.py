@@ -9,6 +9,15 @@ from maya.api import OpenMaya as om
 OWNER = "ixrayBoneCollision"
 MENU = "ixrayBoneMenu"
 WINDOW = "ixrayBoneWindow"
+GAME_ROOT_WINDOW = "ixrayGameRootWindow"
+GAME_ROOT_PATH_ROWS = (
+	("fsgame.ltx", "ixrayGamePathFsgame"),
+	("$game_data$", "ixrayGamePathData"),
+	("$game_textures$", "ixrayGamePathTextures"),
+	("$game_configs$", "ixrayGamePathConfigs"),
+	("$game_meshes$", "ixrayGamePathMeshes"),
+	("$ixr_addons$", "ixrayGamePathAddons"),
+)
 SHAPE_TYPES = ("None", "Box", "Sphere", "Cylinder")
 JOINT_TYPES = ("Rigid", "Cloth", "Joint", "Wheel", "None", "Slider")
 AXES = "XYZ"
@@ -490,20 +499,7 @@ def show_editor(*_):
 	cmds.showWindow(WINDOW)
 
 
-def set_game_root(*_):
-	result = cmds.fileDialog2(fileMode=3, caption="IX-Ray: select the game working directory",
-							  okCaption="Select Game Root")
-	if not result:
-		return
-	root = result[0].rstrip("\\/")
-	if not root:
-		return
-	cmds.optionVar(sv=("ixrayGameRoot", root))
-	cmds.warning("IX-Ray: game working directory saved. Restart Maya for it to take effect")
-
-
-def show_game_paths(*_):
-	root = cmds.optionVar(q="ixrayGameRoot") if cmds.optionVar(exists="ixrayGameRoot") else ""
+def _game_root_paths(root):
 	root = root.rstrip("\\/")
 	fsgame = os.path.join(root, "fsgame.ltx")
 	data = "gamedata"
@@ -516,10 +512,78 @@ def show_game_paths(*_):
 						data = candidate
 					break
 	game_data = os.path.join(root, data)
-	addons = os.path.join(root, "ixr_addons")
-	message = "Game Root:\n{0}\n\nfsgame.ltx: {1}\n\n$game_data$:\n{2}\n\n$ixr_addons$:\n{3}".format(
-		root or "<not set>", fsgame if os.path.isfile(fsgame) else "<not found>", game_data, addons)
-	cmds.confirmDialog(title="IX-Ray paths", message=message, button=["Close"], defaultButton="Close")
+	return {
+		"fsgame.ltx": fsgame, "$game_data$": game_data,
+		"$game_textures$": os.path.join(game_data, "textures"),
+		"$game_configs$": os.path.join(game_data, "configs"),
+		"$game_meshes$": os.path.join(game_data, "meshes"),
+		"$ixr_addons$": os.path.join(root, "ixr_addons"),
+	}
+
+
+def _game_root_refresh(*_):
+	if not cmds.window(GAME_ROOT_WINDOW, exists=True):
+		return
+	root = cmds.textFieldButtonGrp("ixrayGameRootField", query=True, text=True).strip().rstrip("\\/")
+	paths = _game_root_paths(root) if root else {}
+	for label, control in GAME_ROOT_PATH_ROWS:
+		path = paths.get(label, "")
+		found = bool(path) and os.path.exists(path)
+		cmds.textField(control, edit=True, text=path or "<not set>")
+		cmds.text(control + "State", edit=True, label="FOUND" if found else "MISSING",
+				  backgroundColor=(0.18, 0.38, 0.22) if found else (0.42, 0.20, 0.20))
+
+
+def _game_root_browse(*_):
+	result = cmds.fileDialog2(fileMode=3, caption="IX-Ray: select the game working directory",
+							  okCaption="Select Game Root")
+	if result:
+		cmds.textFieldButtonGrp("ixrayGameRootField", edit=True, text=result[0].rstrip("\\/"))
+		_game_root_refresh()
+
+
+def _game_root_save(*_):
+	root = cmds.textFieldButtonGrp("ixrayGameRootField", query=True, text=True).strip().rstrip("\\/")
+	if not root:
+		cmds.warning("IX-Ray: choose the game root first")
+		return
+	cmds.optionVar(sv=("ixrayGameRoot", root))
+	_game_root_refresh()
+	cmds.warning("IX-Ray: Game Root saved. Restart Maya for the file-system paths to reload")
+
+
+def show_game_root(*_):
+	if cmds.window(GAME_ROOT_WINDOW, exists=True):
+		cmds.deleteUI(GAME_ROOT_WINDOW)
+	root = cmds.optionVar(q="ixrayGameRoot") if cmds.optionVar(exists="ixrayGameRoot") else ""
+	cmds.window(GAME_ROOT_WINDOW, title="IX-Ray Game Root", widthHeight=(760, 430), sizeable=True)
+	cmds.columnLayout(adjustableColumn=True, rowSpacing=10, columnAttach=("both", 12))
+	cmds.frameLayout(label="Game working directory", marginWidth=10, marginHeight=10)
+	cmds.columnLayout(adjustableColumn=True, rowSpacing=7)
+	cmds.text(label="Set the root folder once. IX-Ray resolves game paths from fsgame.ltx.", align="left")
+	cmds.textFieldButtonGrp("ixrayGameRootField", label="Game Root", text=root,
+							 columnWidth3=(78, 550, 88), buttonLabel="Browse...",
+							 buttonCommand=_game_root_browse, changeCommand=_game_root_refresh)
+	cmds.rowLayout(numberOfColumns=2, adjustableColumn=1, columnWidth2=(620, 96))
+	cmds.text(label="Changes are applied after restarting Maya.", align="left")
+	cmds.button(label="Save", command=_game_root_save)
+	cmds.setParent("..")
+	cmds.setParent("..")
+	cmds.frameLayout(label="Resolved paths", marginWidth=10, marginHeight=10)
+	cmds.columnLayout(adjustableColumn=True, rowSpacing=5)
+	for label, control in GAME_ROOT_PATH_ROWS:
+		cmds.rowLayout(numberOfColumns=3, adjustableColumn=2, columnWidth3=(112, 520, 76),
+						   columnAlign3=("right", "left", "center"))
+		cmds.text(label=label, align="right")
+		cmds.textField(control, editable=False)
+		cmds.text(control + "State", label="", align="center")
+		cmds.setParent("..")
+	cmds.setParent("..")
+	cmds.setParent("..")
+	cmds.text(label="Addon textures are searched recursively: ixr_addons\\<addon>\\...\\textures\\...",
+			  align="left", font="smallPlainLabelFont")
+	cmds.showWindow(GAME_ROOT_WINDOW)
+	_game_root_refresh()
 
 
 def run_motion_browser(*_):
@@ -556,8 +620,7 @@ global proc ixrayBoneAEReplace(string $plug)
 	cmds.menuItem(label="Hide All", command=partial(set_visibility, False))
 	cmds.menuItem(parent=MENU, divider=True)
 	cmds.menuItem(parent=MENU, label="Moution Browser...", command=run_motion_browser)
-	cmds.menuItem(parent=MENU, label="Set Game Root...", command=set_game_root)
-	cmds.menuItem(parent=MENU, label="Show Game Paths...", command=show_game_paths)
+	cmds.menuItem(parent=MENU, label="Game Root...", command=show_game_root)
 	_refresh_templates()
 
 
