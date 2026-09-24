@@ -73,6 +73,19 @@ def _display_name(motion):
     return motion.get("display_name", motion["name"])
 
 
+def _source_options(motion):
+    """Return one motion's source OMF metadata in exporter format."""
+    return str(cmds.ixrayMotionInfo(motion["path"], motion["name"],
+                                    motion.get("source_index", 0)))
+
+
+def _source_settings(motion):
+    """Parse one motion's source OMF metadata."""
+    raw = _source_options(motion)
+    return dict(item.split("=", 1) for item in str(raw).split(";")
+                if "=" in item)
+
+
 def _load_paths(paths):
     motions = list(_motions)
     for path in paths:
@@ -127,12 +140,7 @@ def _update_motion_info(*_):
         return
     motion = _motions[indices[0]]
     try:
-        raw = cmds.ixrayMotionInfo(motion["path"], motion["name"], motion.get("source_index", 0))
-        values = {}
-        for item in str(raw).split(";"):
-            if "=" in item:
-                key, value = item.split("=", 1)
-                values[key] = value
+        values = _source_settings(motion)
         flags = int(values.get("omf_flags", "0"))
         flag_names = []
         for bit, label in ((0x1, "FX"), (0x2, "Stop at end"),
@@ -342,8 +350,7 @@ def export_selected(*_):
                 export_type = "SKL export"
                 options = ""
             else:
-                source_options = cmds.ixrayMotionInfo(motion["path"], motion["name"],
-                                                      motion.get("source_index", 0))
+                source_options = _source_options(motion)
                 options = "omf_position_precision={};omf_motion_name={};{}".format(
                     precision, motion["name"], source_options)
                 export_type = "OMF export"
@@ -433,12 +440,7 @@ def load_selected(*_, play=False):
                                  motion.get("source_index", 0))
         # Keep the source metadata in the scene so Export Selection OMF can
         # re-bake the animation without silently replacing its motion settings.
-        source_options = cmds.ixrayMotionInfo(path, name, motion.get("source_index", 0))
-        source_values = {}
-        for item in str(source_options).split(";"):
-            if "=" in item:
-                key, value = item.split("=", 1)
-                source_values[key] = value
+        source_values = _source_settings(motion)
         for option, scene_key in (("omf_accrue", "ixrayOmfAccrue"),
                                   ("omf_falloff", "ixrayOmfFalloff"),
                                   ("omf_flags", "ixrayOmfFlags"),
@@ -467,8 +469,12 @@ def load_selected(*_, play=False):
             _busy = False
     cmds.playbackOptions(minTime=values[2], maxTime=max(values[2], end),
                          animationStartTime=values[2], animationEndTime=max(values[2], end))
-    cmds.currentTime(values[2])
+    # Do not force the timeline back to the first frame here.  Apart from
+    # being unnecessary (the imported keys and range are already in place),
+    # this can make Maya evaluate unrelated scene callbacks and report a
+    # generic "Maya command error" after a successful import.
     if play:
+        cmds.currentTime(values[2])
         cmds.play(forward=True)
 
 

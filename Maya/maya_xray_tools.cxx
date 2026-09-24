@@ -30,6 +30,7 @@
 #include <maya/MPlug.h>
 #include "maya_import_tools.h"
 #include "maya_export_tools.h"
+#include "maya_omf_settings.h"
 #include "maya_xray_material.h"
 #include "maya_bone_collision.h"
 #include "maya_options_script.h"
@@ -147,23 +148,7 @@ public:
 		DeleteFileA(exported_path);
 
 		MString options;
-		MStringArray motion_name;
-		if (MGlobal::executeCommand("fileInfo -q \"ixrayOmfMotionName\"", motion_name, false) == MS::kSuccess
-			&& motion_name.length() > 0 && motion_name[0].length() > 0)
-			options = MString("omf_motion_name=") + motion_name[0] + ";";
-		const struct { const char* scene_key; const char* option_key; } source_settings[] = {
-			{ "ixrayOmfSpeed", "omf_speed" },
-			{ "ixrayOmfAccrue", "omf_accrue" },
-			{ "ixrayOmfFalloff", "omf_falloff" },
-			{ "ixrayOmfFlags", "omf_flags" },
-			{ "ixrayOmfStopAtEnd", "omf_stop_at_end" },
-		};
-		for (const auto& setting : source_settings) {
-			MStringArray value;
-			if (MGlobal::executeCommand(MString("fileInfo -q \"") + setting.scene_key + "\"", value, false) == MS::kSuccess
-				&& value.length() > 0)
-				options += MString(setting.option_key) + "=" + value[0] + ";";
-		}
+		append_omf_scene_settings(options);
 		maya_export_tools tools(options);
 		const MStatus export_status = tools.export_omf(exported_path, true);
 		if (export_status != MS::kSuccess) {
