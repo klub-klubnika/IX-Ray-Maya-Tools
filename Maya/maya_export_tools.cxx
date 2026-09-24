@@ -505,48 +505,22 @@ static MStatus extract_uvs(MFnMesh& mesh_fn, lw_face_vec& faces,
 		lw_vmref_vec& vmrefs, xr_vmap_vec& vmaps)
 {
 	MStatus status;
-
 	xr_uv_vmap* uv_vmap = 0;
 	xr_face_uv_vmap* face_uv_vmap = 0;
 
 	auto MayaObject = mesh_fn.object();
-
 	for (MItMeshVertex it(MayaObject); !it.isDone(); it.next())
 	{
 		uint32_t vert_idx = uint32_t(it.index() & INT_MAX);
 
-		MIntArray adjacents;
-		it.getConnectedFaces(adjacents);
-
 		fvector2 uv0;
 		if (!it.getUV(uv0.xy))
 		{
-			// Maya reports no "shared" UV when the vertex has a different UV at
-			// every polygon corner.  That is a valid seam: use one of the
-			// polygon-corner UVs as the base and emit the other ones below into
-			// the per-face UV vmap.
-			bool found_face_uv = false;
-			for (unsigned i = 0; i < adjacents.length(); ++i)
-			{
-				if (it.getUV(uint32_t(adjacents[i] & INT_MAX), uv0.xy))
-				{
-					found_face_uv = true;
-					break;
-				}
-			}
-			if (!found_face_uv)
-			{
-				// Untextured helper geometry can contain vertices without any UV
-				// assignment. OGF still needs a texture coordinate for each vertex;
-				// export a stable zero coordinate instead of rejecting the whole
-				// model.
-				msg("xray_re: missing UVs for vert %" PRIu32 " on mesh %s; using 0,0",
-					vert_idx, mesh_fn.name().asChar());
-				MGlobal::displayWarning(MString("IX-Ray: missing UVs for vert ") +
-					vert_idx + " on mesh " + mesh_fn.name().asChar() + "; using 0,0.");
-				uv0.u = 0.f;
-				uv0.v = 0.f;
-			}
+			msg("xray_re: can't extract shared UVs for vert %" PRIu32 " on mesh %s",
+				vert_idx, mesh_fn.name().asChar());
+			MGlobal::displayError(MString("xray_re: can't extract shared UVs for vert ") +
+				vert_idx + " on mesh " + mesh_fn.name().asChar());
+			return MS::kInvalidParameter;
 		}
 		uv0.v = 1.f - uv0.v;
 
@@ -558,50 +532,34 @@ static MStatus extract_uvs(MFnMesh& mesh_fn, lw_face_vec& faces,
 		}
 		lw_vmref vmref0;
 		vmref0.push_back(lw_vmref_entry(0, uv_vmap->add_uv(uv0, vert_idx)));
-
 		uint32_t vmref0_idx = uint32_t(vmrefs.size() & UINT32_MAX);
 		vmrefs.push_back(vmref0);
 
+		MIntArray adjacents;
+		it.getConnectedFaces(adjacents);
 		for (unsigned i = adjacents.length(); i != 0;)
 		{
 			uint32_t face_idx = uint32_t(adjacents[--i] & INT_MAX), vmref_idx;
-
 			fvector2 uv;
 			if (!it.getUV(face_idx, uv.xy))
 			{
 				msg("xray_re: can't extract UVs for vert %" PRIu32 " face %" PRIu32, vert_idx, face_idx);
-				MGlobal::displayWarning(MString("xray_re: can't extract UVs for vert ") +
-					vert_idx + " face " + face_idx);
+				MGlobal::displayWarning(MString("xray_re: can't extract UVs for vert ") + vert_idx + " face " + face_idx);
 				uv = uv0;
 			}
 			uv.v = 1.f - uv.v;
-
 			lw_face& face = faces[face_idx];
-			if (uv == uv0)
-			{
-				vmref_idx = vmref0_idx;
-			}
+			if (uv == uv0) vmref_idx = vmref0_idx;
 			else
 			{
-				if (face_uv_vmap == 0)
-				{
-					face_uv_vmap = new xr_face_uv_vmap("Texture");
-					vmaps.push_back(face_uv_vmap);
-				}
+				if (face_uv_vmap == 0) { face_uv_vmap = new xr_face_uv_vmap("Texture"); vmaps.push_back(face_uv_vmap); }
 				lw_vmref vmref;
 				vmref.push_back(lw_vmref_entry(1, face_uv_vmap->add_uv(uv, vert_idx, face_idx)));
 				vmref_idx = uint32_t(vmrefs.size() & UINT32_MAX);
 				vmrefs.push_back(vmref);
 			}
 			for (uint_fast32_t j = 3; j != 0;)
-			{
-				if (face.v[--j] == vert_idx)
-				{
-					face.ref[j] = vmref_idx;
-					vmref_idx = UINT32_MAX;
-					break;
-				}
-			}
+				if (face.v[--j] == vert_idx) { face.ref[j] = vmref_idx; vmref_idx = UINT32_MAX; break; }
 			xr_assert(vmref_idx == UINT32_MAX);
 		}
 	}
