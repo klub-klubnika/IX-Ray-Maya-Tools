@@ -3,8 +3,10 @@ from functools import partial
 
 import sys
 import os
+import json
 from maya import cmds, mel
 from maya.api import OpenMaya as om
+from maya.api import OpenMayaAnim as oma
 
 OWNER = "ixrayBoneCollision"
 MENU = "ixrayBoneMenu"
@@ -25,6 +27,9 @@ _ae_columns = set()
 _edit_depth = 0
 _refresh_pending = False
 _ui_generation = 0
+_skin_callback_ids = []
+_skin_sync_pending = set()
+COLLISION_BIND_MATRIX_ATTR = "xrayCollisionBindMatrix"
 
 
 def _bone_handle(joint):
@@ -176,6 +181,140 @@ def import_shape(joint):
 	return helper
 
 
+def _remember_collision_bind_matrix(joint, helper):
+	if not cmds.attributeQuery(COLLISION_BIND_MATRIX_ATTR, node=joint, exists=True):
+		cmds.addAttr(joint, longName=COLLISION_BIND_MATRIX_ATTR, dataType="string", hidden=True)
+	if not cmds.getAttr(joint + "." + COLLISION_BIND_MATRIX_ATTR):
+		matrix = cmds.xform(helper, query=True, matrix=True, worldSpace=True)
+		cmds.setAttr(joint + "." + COLLISION_BIND_MATRIX_ATTR, json.dumps(matrix), type="string")
+
+
+def _restore_collision_bind_matrix(joint):
+	if not cmds.attributeQuery(COLLISION_BIND_MATRIX_ATTR, node=joint, exists=True):
+		return False
+	try:
+		matrix = json.loads(cmds.getAttr(joint + "." + COLLISION_BIND_MATRIX_ATTR) or "[]")
+		if len(matrix) != 16:
+			return False
+		for helper in helpers(joint):
+			cmds.xform(helper, worldSpace=True, matrix=matrix)
+		return True
+	except (TypeError, ValueError, RuntimeError):
+		return False
+
+
+def _dag_path(name):
+	selection = om.MSelectionList()
+	selection.add(name)
+	return selection.getDagPath(0)
+
+
+def _skin_collision_joints(skin):
+	"""Collision joints that belong to one skinCluster."""
+	result = []
+	for influence in cmds.skinCluster(skin, query=True, influence=True) or []:
+		joint = (cmds.ls(influence, long=True) or [influence])[0]
+		if (cmds.nodeType(joint) == "joint" and
+				cmds.attributeQuery("xrayShapeType", node=joint, exists=True) and
+				cmds.getAttr(joint + ".xrayShapeType") != 0 and helpers(joint)):
+			result.append(joint)
+	return result
+
+
+def _sync_collision_offset(joint, skin):
+	"""Place one existing collision shape over the vertices weighted to joint.
+
+	The primitive's dimensions and rotation are intentional authored data. Only
+	its joint-local position is compensated after a bind-pose change.
+	"""
+	try:
+		skin_selection = om.MSelectionList()
+		skin_selection.add(skin)
+		skin_fn = oma.MFnSkinCluster(skin_selection.getDependNode(0))
+		joint_path = _dag_path(joint)
+		influences = skin_fn.influenceObjects()
+		influence_index = next((index for index, path in enumerate(influences)
+								if path.fullPathName() == joint_path.fullPathName()), None)
+		if influence_index is None:
+			return False
+		inverse = joint_path.inclusiveMatrixInverse()
+		min_point = max_point = None
+		for geometry in cmds.skinCluster(skin, query=True, geometry=True) or []:
+			geometry = (cmds.ls(geometry, long=True) or [geometry])[0]
+			shapes = [geometry] if cmds.nodeType(geometry) == "mesh" else (
+				cmds.listRelatives(geometry, shapes=True, noIntermediate=True, type="mesh", fullPath=True) or [])
+			for shape in shapes:
+				mesh_path = _dag_path(shape)
+				mesh_fn = om.MFnMesh(mesh_path)
+				component_fn = om.MFnSingleIndexedComponent()
+				component = component_fn.create(om.MFn.kMeshVertComponent)
+				component_fn.addElements(range(mesh_fn.numVertices))
+				weights, influence_count = skin_fn.getWeights(mesh_path, component)
+				points = mesh_fn.getPoints(om.MSpace.kWorld)
+				for vertex, point in enumerate(points):
+					if weights[vertex * influence_count + influence_index] <= 1.0e-4:
+						continue
+					point = point * inverse
+					if min_point is None:
+						min_point = om.MPoint(point)
+						max_point = om.MPoint(point)
+					else:
+						min_point.x, min_point.y, min_point.z = min(min_point.x, point.x), min(min_point.y, point.y), min(min_point.z, point.z)
+						max_point.x, max_point.y, max_point.z = max(max_point.x, point.x), max(max_point.y, point.y), max(max_point.z, point.z)
+		if min_point is None:
+			return False
+		center = om.MPoint((min_point.x + max_point.x) * 0.5,
+						   (min_point.y + max_point.y) * 0.5,
+						   (min_point.z + max_point.z) * 0.5)
+		unit = om.MDistance.uiUnit()
+		center = [om.MDistance(value, om.MDistance.kCentimeters).asUnits(unit)
+				  for value in (center.x, center.y, center.z)]
+		for helper in helpers(joint):
+			cmds.setAttr(helper + ".translate", *center)
+		return True
+	except RuntimeError:
+		return False
+
+
+def _sync_skin_collision_shapes(skin, announce=False):
+	updated = sum(1 for joint in _skin_collision_joints(skin)
+			  if _sync_collision_offset(joint, skin))
+	if announce and updated:
+		cmds.inViewMessage(amg="IX-Ray: synchronized {} collision shape(s)".format(updated),
+						position="topCenter", fade=True)
+	return updated
+
+
+def sync_selected_collisions_to_skin(*_):
+	joints = selected_bones()
+	if not joints:
+		cmds.warning("IX-Ray: select collision joints first")
+		return
+	updated = sum(1 for joint in joints if _restore_collision_bind_matrix(joint))
+	if not updated:
+		cmds.warning("IX-Ray: selected collisions have no saved bind-pose position; rebuild the shape once before rebinding")
+	else:
+		cmds.inViewMessage(amg="IX-Ray: restored {} collision shape(s) to bind pose".format(updated),
+						position="topCenter", fade=True)
+
+
+def _sync_added_skin(skin):
+	_skin_sync_pending.discard(skin)
+	if cmds.objExists(skin):
+		for joint in _skin_collision_joints(skin):
+			_restore_collision_bind_matrix(joint)
+
+
+def _skin_cluster_added(node, *_):
+	try:
+		skin = om.MFnDependencyNode(node).name()
+		if skin not in _skin_sync_pending:
+			_skin_sync_pending.add(skin)
+			cmds.evalDeferred(partial(_sync_added_skin, skin))
+	except RuntimeError:
+		pass
+
+
 def _rebuild_shape(joint):
 	ensure_bone(joint)
 	shape_type = cmds.getAttr(joint + ".xrayShapeType")
@@ -229,6 +368,7 @@ def _rebuild_shape(joint):
 	for shape in cmds.listRelatives(node, shapes=True, fullPath=True) or []:
 		for attr in ("castsShadows", "receiveShadows", "primaryVisibility", "visibleInReflections", "visibleInRefractions"):
 			cmds.setAttr(shape + "." + attr, False)
+	_remember_collision_bind_matrix(joint, node)
 	return node
 
 
@@ -592,6 +732,7 @@ def run_motion_browser(*_):
 
 
 def install():
+	global _skin_callback_ids
 	if cmds.about(batch=True):
 		return
 	uninstall()
@@ -621,15 +762,19 @@ global proc ixrayBoneAEReplace(string $plug)
 	cmds.menuItem(parent=MENU, divider=True)
 	cmds.menuItem(parent=MENU, label="Moution Browser...", command=run_motion_browser)
 	cmds.menuItem(parent=MENU, label="Game Root...", command=show_game_root)
+	_skin_callback_ids = [om.MDGMessage.addNodeAddedCallback(_skin_cluster_added, "skinCluster")]
 	_refresh_templates()
 
 
 def uninstall():
-	global _ui_generation, _refresh_pending
+	global _ui_generation, _refresh_pending, _skin_callback_ids
 	_ui_generation += 1
 	_refresh_pending = False
 	if cmds.about(batch=True):
 		return
+	for callback in _skin_callback_ids:
+		om.MMessage.removeCallback(callback)
+	_skin_callback_ids = []
 	cmds.callbacks(clearCallbacks=True, owner=OWNER)
 	if cmds.window(WINDOW, exists=True):
 		cmds.deleteUI(WINDOW)
