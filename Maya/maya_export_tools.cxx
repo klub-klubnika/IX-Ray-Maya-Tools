@@ -32,6 +32,7 @@
 #include <maya/MPlugArray.h>
 #include <maya/MPointArray.h>
 #include <maya/MSelectionList.h>
+#include <maya/MStringArray.h>
 #include <maya/MMatrix.h>
 #include <maya/MQuaternion.h>
 #include <cctype>
@@ -507,60 +508,114 @@ static MStatus extract_uvs(MFnMesh& mesh_fn, lw_face_vec& faces,
 	MStatus status;
 	xr_uv_vmap* uv_vmap = 0;
 	xr_face_uv_vmap* face_uv_vmap = 0;
-
 	auto MayaObject = mesh_fn.object();
-	for (MItMeshVertex it(MayaObject); !it.isDone(); it.next())
+	MDagPath mesh_path;
+	if (!(status = MDagPath::getAPathTo(MayaObject, mesh_path)))
+		return status;
+	MFnMesh uv_mesh_fn(mesh_path, &status);
+	if (!status) return status;
+	MStringArray uv_sets;
+	if (!(status = uv_mesh_fn.getUVSetNames(uv_sets)))
+		return status;
+	MStringArray uv_sets_to_export;
+	auto append_if_nonempty = [&](const MString& name)
 	{
-		uint32_t vert_idx = uint32_t(it.index() & INT_MAX);
+		MStatus uv_status;
+		if (uv_mesh_fn.numUVs(name, &uv_status) > 0 && uv_status)
+			uv_sets_to_export.append(name);
+	};
+	// UV0 is commonly the authored map in imported assets.  Check it first,
+	// then fall back through every other non-empty UV set.
+	for (unsigned i = 0; i != uv_sets.length(); ++i)
+	{
+		if (uv_sets[i] == "UV0") append_if_nonempty(uv_sets[i]);
+	}
+	for (unsigned i = 0; i != uv_sets.length(); ++i)
+	{
+		if (uv_sets[i] == "UV0") continue;
+		append_if_nonempty(uv_sets[i]);
+	}
+	if (uv_sets_to_export.length() == 0)
+	{
+		MGlobal::displayError(MString("xray_re: mesh has no non-empty UV set: ") + mesh_fn.name());
+		return MS::kInvalidParameter;
+	}
+	const size_t num_vertices = size_t(mesh_fn.numVertices() & INT_MAX);
+	std::vector<fvector2> corner_uvs(faces.size() * 3);
+	std::vector<bool> has_corner_uv(faces.size() * 3, false);
+	std::vector<fvector2> default_uvs(num_vertices);
+	std::vector<bool> has_default_uv(num_vertices, false);
 
-		fvector2 uv0;
-		if (!it.getUV(uv0.xy))
+	// Read UVs through the same polygon-corner API as Maya's Python API.
+	// MItMeshVertex rejects ordinary UV seams, while MItMeshFaceVertex can
+	// lose per-instance assignments on imported meshes.
+	for (uint32_t face_idx = 0; face_idx != faces.size(); ++face_idx)
+	{
+		for (uint_fast32_t corner = 0; corner != 3; ++corner)
 		{
-			msg("xray_re: can't extract shared UVs for vert %" PRIu32 " on mesh %s",
-				vert_idx, mesh_fn.name().asChar());
-			MGlobal::displayError(MString("xray_re: can't extract shared UVs for vert ") +
-				vert_idx + " on mesh " + mesh_fn.name().asChar());
-			return MS::kInvalidParameter;
+			const int maya_corner = 2 - int(corner);
+			bool has_uv = false;
+			float u = 0, v = 0;
+			for (unsigned uv_set_idx = 0; uv_set_idx != uv_sets_to_export.length(); ++uv_set_idx)
+			{
+				int uv_index;
+				if (!uv_mesh_fn.getPolygonUVid(face_idx, maya_corner, uv_index, &uv_sets_to_export[uv_set_idx]))
+					continue;
+				if (!uv_mesh_fn.getUV(uv_index, u, v, &uv_sets_to_export[uv_set_idx]))
+					continue;
+				has_uv = true;
+				break;
+			}
+			if (!has_uv) continue;
+			fvector2& uv = corner_uvs[size_t(face_idx) * 3 + corner];
+			uv.set(u, 1.f - v);
+			has_corner_uv[size_t(face_idx) * 3 + corner] = true;
+			const uint32_t vert_idx = faces[face_idx].v[corner];
+			default_uvs[vert_idx] = uv;
+			has_default_uv[vert_idx] = true;
 		}
-		uv0.v = 1.f - uv0.v;
+	}
+	status = MS::kSuccess;
 
+	std::vector<uint32_t> default_refs(num_vertices, UINT32_MAX);
+	for (uint32_t vert_idx = 0; vert_idx != num_vertices; ++vert_idx)
+	{
+		if (!has_default_uv[vert_idx]) continue;
 		if (uv_vmap == 0)
 		{
 			uv_vmap = new xr_uv_vmap("Texture");
-			uv_vmap->reserve(size_t(mesh_fn.numVertices() & INT_MAX));
+			uv_vmap->reserve(num_vertices);
 			vmaps.push_back(uv_vmap);
 		}
 		lw_vmref vmref0;
-		vmref0.push_back(lw_vmref_entry(0, uv_vmap->add_uv(uv0, vert_idx)));
-		uint32_t vmref0_idx = uint32_t(vmrefs.size() & UINT32_MAX);
+		vmref0.push_back(lw_vmref_entry(0, uv_vmap->add_uv(default_uvs[vert_idx], vert_idx)));
+		default_refs[vert_idx] = uint32_t(vmrefs.size() & UINT32_MAX);
 		vmrefs.push_back(vmref0);
+	}
 
-		MIntArray adjacents;
-		it.getConnectedFaces(adjacents);
-		for (unsigned i = adjacents.length(); i != 0;)
+	for (uint32_t face_idx = 0; face_idx != faces.size(); ++face_idx)
+	{
+		lw_face& face = faces[face_idx];
+		for (uint_fast32_t corner = 0; corner != 3; ++corner)
 		{
-			uint32_t face_idx = uint32_t(adjacents[--i] & INT_MAX), vmref_idx;
-			fvector2 uv;
-			if (!it.getUV(face_idx, uv.xy))
+			const uint32_t vert_idx = face.v[corner];
+			if (default_refs[vert_idx] == UINT32_MAX)
 			{
-				msg("xray_re: can't extract UVs for vert %" PRIu32 " face %" PRIu32, vert_idx, face_idx);
-				MGlobal::displayWarning(MString("xray_re: can't extract UVs for vert ") + vert_idx + " face " + face_idx);
-				uv = uv0;
+				MGlobal::displayError(MString("xray_re: no UV is assigned to vert ") + vert_idx +
+					" on mesh " + mesh_fn.name().asChar());
+				return MS::kInvalidParameter;
 			}
-			uv.v = 1.f - uv.v;
-			lw_face& face = faces[face_idx];
-			if (uv == uv0) vmref_idx = vmref0_idx;
+			const size_t uv_slot = size_t(face_idx) * 3 + corner;
+			const fvector2& uv = has_corner_uv[uv_slot] ? corner_uvs[uv_slot] : default_uvs[vert_idx];
+			if (uv == default_uvs[vert_idx]) face.ref[corner] = default_refs[vert_idx];
 			else
 			{
 				if (face_uv_vmap == 0) { face_uv_vmap = new xr_face_uv_vmap("Texture"); vmaps.push_back(face_uv_vmap); }
 				lw_vmref vmref;
 				vmref.push_back(lw_vmref_entry(1, face_uv_vmap->add_uv(uv, vert_idx, face_idx)));
-				vmref_idx = uint32_t(vmrefs.size() & UINT32_MAX);
+				face.ref[corner] = uint32_t(vmrefs.size() & UINT32_MAX);
 				vmrefs.push_back(vmref);
 			}
-			for (uint_fast32_t j = 3; j != 0;)
-				if (face.v[--j] == vert_idx) { face.ref[j] = vmref_idx; vmref_idx = UINT32_MAX; break; }
-			xr_assert(vmref_idx == UINT32_MAX);
 		}
 	}
 	return status;
