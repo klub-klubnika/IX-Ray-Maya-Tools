@@ -524,17 +524,8 @@ static MStatus extract_uvs(MFnMesh& mesh_fn, lw_face_vec& faces,
 		if (uv_mesh_fn.numUVs(name, &uv_status) > 0 && uv_status)
 			uv_sets_to_export.append(name);
 	};
-	// UV0 is commonly the authored map in imported assets.  Check it first,
-	// then fall back through every other non-empty UV set.
 	for (unsigned i = 0; i != uv_sets.length(); ++i)
-	{
-		if (uv_sets[i] == "UV0") append_if_nonempty(uv_sets[i]);
-	}
-	for (unsigned i = 0; i != uv_sets.length(); ++i)
-	{
-		if (uv_sets[i] == "UV0") continue;
 		append_if_nonempty(uv_sets[i]);
-	}
 	if (uv_sets_to_export.length() == 0)
 	{
 		MGlobal::displayError(MString("xray_re: mesh has no non-empty UV set: ") + mesh_fn.name());
