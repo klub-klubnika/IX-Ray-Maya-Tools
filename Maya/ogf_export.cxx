@@ -202,7 +202,7 @@ bool save_skeletal_ogf(xr_object& object, const char* path, ogf_smoothing smooth
     try {
         require(influence_limit == 2 || influence_limit == 4, "OGF influence limit must be 2 or 4.");
         auto& bones = object.bones();
-        require(!bones.empty() && bones.size() <= MAX_BONES, "Skeleton must contain 1 to 64 bones.");
+        require(!bones.empty() && bones.size() <= MAX_BONES, "Skeleton must contain 1 to 128 bones.");
         std::map<std::string, uint16_t> bone_ids;
         for (size_t i = 0; i < bones.size(); ++i) {
             require(bone_ids.emplace(bones[i]->name(), uint16_t(i)).second, "Duplicate bone names.");

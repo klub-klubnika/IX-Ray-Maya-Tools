@@ -338,7 +338,7 @@ global proc ixrayOmfMarkParamStore() {
 global proc ixrayOmfMarksAdd() {
 	global int $gIxrayOmfSelectedMark;
 	global int $gIxrayOmfSelectedMarkParam;
-	string $result = `confirmDialog -title "Add motion mark" -message "Select mark type" -button "left" -button "left2" -button "right" -button "right2" -button "mm_unpend" -button "Cancel" -defaultButton "left" -cancelButton "Cancel" -dismissString "Cancel"`;
+	string $result = `confirmDialog -title "Add motion mark" -message "Select mark type" -button "left" -button "left2" -button "right" -button "right2" -button "mm_unpend" -button "mm_ik_start" -button "mm_ik_end" -button "Cancel" -defaultButton "left" -cancelButton "Cancel" -dismissString "Cancel"`;
 	if ($result != "Cancel") { string $old = `textField -q -text ixrayOmfMarksData`; textField -e -text ($old == "" ? $result : ($old + "," + $result)) ixrayOmfMarksData; $gIxrayOmfSelectedMark = size(`textScrollList -q -allItems ixrayOmfMarksList`); $gIxrayOmfSelectedMarkParam = -1; ixrayOmfMarksRefresh; ixrayOmfMarkParamsRefresh; ixrayOmfSaveSceneSettings; }
 }
 global proc ixrayOmfMarksDelete() {
